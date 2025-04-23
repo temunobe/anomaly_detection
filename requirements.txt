@@ -1,46 +1,18 @@
-asttokens @ file:///croot/asttokens_1743630435401/work
 certifi==2025.1.31
 charset-normalizer==3.4.1
-comm @ file:///work/perseverance-python-buildout/croot/comm_1728387093347/work
-debugpy @ file:///croot/debugpy_1736267418885/work
-decorator @ file:///opt/conda/conda-bld/decorator_1643638310831/work
-executing @ file:///opt/conda/conda-bld/executing_1646925071911/work
 filelock==3.18.0
 fsspec==2025.3.2
 huggingface-hub==0.30.2
 idna==3.10
-ipykernel @ file:///croot/ipykernel_1737660677549/work
-ipython @ file:///croot/ipython_1734548052611/work
-jedi @ file:///croot/jedi_1733987392413/work
-jupyter_client @ file:///io/buildout/croot/jupyter_client_1739558249609/work
-jupyter_core @ file:///work/perseverance-python-buildout/croot/jupyter_core_1728385169811/work
-matplotlib-inline @ file:///io/buildout/croot/matplotlib-inline_1732912690718/work
-nest_asyncio @ file:///work/perseverance-python-buildout/croot/nest-asyncio_1728387361665/work
 numpy==2.2.4
-packaging @ file:///croot/packaging_1734472117206/work
-parso @ file:///croot/parso_1733963305961/work
-pexpect @ file:///tmp/build/80754af9/pexpect_1605563209008/work
-platformdirs @ file:///croot/platformdirs_1744273042065/work
-prompt_toolkit @ file:///work/perseverance-python-buildout/croot/prompt-toolkit_1728511366266/work
-psutil @ file:///croot/psutil_1736367091698/work
-ptyprocess @ file:///tmp/build/80754af9/ptyprocess_1609355006118/work/dist/ptyprocess-0.7.0-py2.py3-none-any.whl
-pure-eval @ file:///opt/conda/conda-bld/pure_eval_1646925070566/work
-Pygments @ file:///croot/pygments_1744664109463/work
-python-dateutil @ file:///work/perseverance-python-buildout/croot/python-dateutil_1728385355105/work
 PyYAML==6.0.2
-pyzmq @ file:///croot/pyzmq_1734687138743/work
 regex==2024.11.6
 requests==2.32.3
 safetensors==0.5.3
 setuptools==75.8.0
-six @ file:///croot/six_1744271502820/work
-stack-data @ file:///opt/conda/conda-bld/stack_data_1646927590127/work
 tokenizers==0.21.1
-tornado @ file:///io/buildout/croot/tornado_1735842129908/work
 tqdm==4.67.1
-traitlets @ file:///work/perseverance-python-buildout/croot/traitlets_1728385099292/work
 transformers==4.51.3
 typing_extensions==4.13.2
 urllib3==2.4.0
-wcwidth @ file:///Users/ktietz/demo/mc3/conda-bld/wcwidth_1629357192024/work
 wheel==0.45.1
