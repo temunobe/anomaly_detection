@@ -1,3 +1,0 @@
-config = dict(
-    'Not seen'
-)
