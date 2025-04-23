@@ -1,3 +1,5 @@
 model_download/
 models/
 __pycache__/
+
+config.py
