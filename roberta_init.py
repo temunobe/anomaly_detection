@@ -7,12 +7,18 @@ import pandas as pd
 
 from PIL import Image
 from sklearn.metrics import classification_report
-from transformers import pipeline, RobertaTokenizer, RobertaModel
+from transformers import (
+    RobertaTokenizer, 
+    RobertaForSequenceClassification,
+    Trainer,
+    TrainingArguments
+    )
 from config import config
+from datasets import Dataset
 
 model_name = 'roberta-base'
 tokenizer = RobertaTokenizer.from_pretrained(model_name)
-model = RobertaModel.from_pretrained(model_name)
+model = RobertaForSequenceClassification.from_pretrained(model_name, num_labels=2)
 
 text = "Replace me by any text you'd like."
 encoded_input = tokenizer(text, return_tensors='pt')
@@ -44,6 +50,23 @@ wifi_mqtt_profiling_df = pd.concat(wm_profiling_df, ignore_index=True)
 print(wifi_mqtt_test_df.head())
 print(wifi_mqtt_train_df.head())
 print(wifi_mqtt_profiling_df.head())
+
+# Preprocessing
+# This function tokenizes the input text using the RoBERTa tokenizer. 
+# It applies padding and truncation to ensure that all sequences have the same length (256 tokens).
+def data_preprocess(data):
+    data['input_ids'] = data['text'].apply(lambda x: tokenizer.encode(x, truncation=True, padding='max_length', max_length=128))
+    data['attention_mask'] = data['input_ids'].apply(lambda x: [1 if token != tokenizer.pad_token_id else 0 for token in x])
+    return data
+    
+wm_test_data = data_preprocess(wifi_mqtt_test_df)
+wm_train_data = data_preprocess(wifi_mqtt_train_df)
+
+# Convert to hugging face dataset 
+wm_test_ds = Dataset.from_pandas(wm_test_data)
+wm_train_ds = Dataset.from_pandas(wm_train_data)
+
+print(wm_test_ds)
 
 # Data files are in pcap format
 # def load_files(folder_path):
