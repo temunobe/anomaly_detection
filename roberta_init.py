@@ -23,14 +23,13 @@ output = model(**encoded_input)
 # Load Data
 # Load CSV files
 # Directories
-wm_attack_test_dir = '../../Data/CICIoMT2024/WiFI and MQTT/attacks/CSV/test/',
-wm_attack_train_dir = '../../Data/CICIoMT2024/WiFI and MQTT/attacks/CSV/train/',
-wm_profiling_dir = '../../Data/CICIoMT2024/WiFI and MQTT/profiling/CSV/',
+wm_attack_test_dir = config['wm_attack_test']
+wm_attack_train_dir = config['wm_attack_train']
+wm_profiling_dir = config['wm_profiling']
 
-
-wifi_mqtt_attack_test = glob.glob(os.path.join(wm_attack_test_dir, '*.csv')),
-wifi_mqtt_attack_train = glob.glob(os.path.join(wm_attack_train_dir, '*.csv')),
-wifi_mqtt_profiling = glob.glob(os.path.join(wm_profiling_dir, '*.csv')),
+wifi_mqtt_attack_test = glob.glob(os.path.join(wm_attack_test_dir, '*.csv'))
+wifi_mqtt_attack_train = glob.glob(os.path.join(wm_attack_train_dir, '*.csv'))
+wifi_mqtt_profiling = glob.glob(os.path.join(wm_profiling_dir, '*.csv'))
 
 # Load and concatenate all CSV files
 wm_test_df = [pd.read_csv(file) for file in wifi_mqtt_attack_test]
@@ -42,9 +41,9 @@ wifi_mqtt_train_df = pd.concat(wm_train_df, ignore_index=True)
 wm_profiling_df = [pd.read_csv(file) for file in wifi_mqtt_profiling]
 wifi_mqtt_profiling_df = pd.concat(wm_profiling_df, ignore_index=True)
 
-wifi_mqtt_test_df.head()
-wifi_mqtt_train_df.head()
-wifi_mqtt_profiling_df.head()
+print(wifi_mqtt_test_df.head())
+print(wifi_mqtt_train_df.head())
+print(wifi_mqtt_profiling_df.head())
 
 # Data files are in pcap format
 # def load_files(folder_path):
