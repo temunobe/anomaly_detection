@@ -13,67 +13,6 @@ from config import config
 
 pd.set_option('display.max_columns', None)
 
-# Load Data
-test_path = '/data/user/bsindala/PhD/Research/CICIoMT2024/WiFI and MQTT/attacks/CSV/test'
-train_path = '/data/user/bsindala/PhD/Research/CICIoMT2024/WiFI and MQTT/attacks/CSV/train'
-
-def load_and_concatenate(filepath):
-    dataframes = []
-    for filename in os.listdir(filepath):
-        if filename.endswith('.csv'):
-            file_path = os.path.join(filepath, filename)
-            df = pd.read_csv(file_path)
-            #df['source_file'] = filename
-            dataframes.append(df)
-    return pd.concat(dataframes, ignore_index=True)
-    
-test_df = load_and_concatenate(test_path)
-train_df = load_and_concatenate(train_path)
-
-print("Test Dataframe shape:", test_df.shape)
-print("Train Dataframe shape:", train_df.shape)
-
-print(test_df.head())
-
-print()
-
-print(train_df.head())
-
-print()
-
-# Missing Values
-print(test_df.isnull().sum())
-print(train_df.isnull().sum())
-
-print()
-
-print(train_df.info)
-
-print()
-
-print(train_df.dtypes)
-
-# Remove Constants
-# train_df = train_df.loc[:, (train_df != train_df.iloc[0]).any()]
-
-# # Normalize the data using Min Max Scaling
-# normalized_train_df = (train_df - train_df.min()) / (train_df.max() - train_df.min())
-
-# # Bin each feature into 5 bins
-# binned_train_df = normalized_train_df.apply(lambda x: pd.cut(x, bins=5, labels=False))
-
-# # Generate token sequences
-# tokens = []
-# for index, row in binned_train_df.iterrows():
-#     row_tokens = [f"T{index}_f{col}_bin{int(row[col])}" for col in binned_train_df.columns]
-#     tokens.append(row_tokens)
-    
-# # Print token sequences
-# for row_tokens in tokens:
-#     print(row_tokens)
-
-# --- Your ATTACK_CATEGORIES dictionaries and get_attack_category function ---
-# (Keep these as you provided)
 ATTACK_CATEGORIES_19 = {
     'ARP_Spoofing': 'Spoofing',
     'MQTT-DDoS-Connect_Flood': 'MQTT-DDoS-Connect_Flood',
@@ -97,7 +36,8 @@ ATTACK_CATEGORIES_19 = {
 }
 
 # 6 Class mapping
-ATTACK_CATEGORIES_6 = { 'Spoofing': 'Spoofing',
+ATTACK_CATEGORIES_6 = { 
+    'Spoofing': 'Spoofing',
     'MQTT-DDoS-Connect_Flood': 'MQTT',
     'MQTT-DDoS-Publish_Flood': 'MQTT',
     'MQTT-DoS-Connect_Flood': 'MQTT',
@@ -143,31 +83,30 @@ ATTACK_CATEGORIES_2 = { #
 
 def get_attack_category(file_name, class_config):
     # Determine which category mapping to use
+    categories_to_use = None
     if class_config == 2:
         categories_to_use = ATTACK_CATEGORIES_2
     elif class_config == 6:
         categories_to_use = ATTACK_CATEGORIES_6
-    else:  # Default to 19 classes
+    elif class_config == 19:
         categories_to_use = ATTACK_CATEGORIES_19
+    else:
+        raise ValueError(f"Invalid class_config: {class_config}. Choose 2, 6, or 19."
 
-    # Now 'categories_to_use' is defined
     for key_in_filename_map in categories_to_use:
-        if key_in_filename_map in file_name: # Check if the specific attack string key is in the filename
-            return categories_to_use[key_in_filename_map] # Return the mapped general category
+        if key_in_filename_map in file_name: 
+            return categories_to_use[key_in_filename_map] 
 
-    # Fallback if no category key is found in the filename
-    # This part needs to be robust. If a file is 'Benign.csv', it should be caught.
-    # The ATTACK_CATEGORIES dictionaries should have an entry for 'Benign' if filenames reflect that.
-    # For example, if ATTACK_CATEGORIES_19 = { ..., 'Benign': 'Benign', ... }
-    # and a file is named 'Benign_flows.csv', then 'Benign' should be in 'Benign_flows.csv'.
-
-    if 'Benign' in categories_to_use and 'Benign' in file_name: # Explicitly check for 'Benign'
+    if 'Benign' in categories_to_use and 'Benign' in file_name:
         return categories_to_use['Benign']
         
     print(f"Warning: Could not determine category for file: {file_name} with class_config: {class_config}. Returning 'Unknown'.")
-    return 'Unknown' # Fallback for files that don't match any key
+    return 'Unknown Category'
     
-# --- 1. Load and Preprocess Data (Adapted from your script) ---
+def textualize_flow(row, feature_names):
+    """Coverting to text"""
+    text_parts = []
+                         
 def load_iomt_data(data_dir, class_config, test_size_for_val=0.2):
     print(f"Loading data for {class_config}-class configuration...")
     train_path = os.path.join(data_dir, "train")
