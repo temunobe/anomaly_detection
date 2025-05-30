@@ -1,133 +1,152 @@
-from roberta_model import IoMTFlowDataset, compute_metrics_fn
-from data_loader import load_iomt_data, textualize_flow
+# main.py
+import os
+import numpy as np
+import torch
+
+from transformers import RobertaTokenizerFast, TrainingArguments
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+# Import from modules
+from roberta_model import init_roberta_model, CustomTrainerWithWeightedLoss
+from data_loader import load_and_prepare_data
 
 # Data Directory
 DATA_DIR = "/data/user/bsindala/PhD/Research/CICIoMT2024/WiFI and MQTT/attacks/CSV/" 
-
+MODEL_NAME = "roberta-base"
+OUTPUT_DIR = "/data/user/bsindala/PhD/Research/LLM_Anomaly_Detection/models"
+LOGGING_DIR = "/data/user/bsindala/PhD/Research/LLM_Anomaly_Detection/logs"
+NUM_EPOCHS = 3
+BATCH_SIZE = 16
+LEARNING_RATE = 5e-5
+MAX_SEQ_LENGTH = 236
 CLASS_CONFIG = 19 # Choose 19, 6, or 2 based on your experiment
+RANDOM_STATE = 42
+
+# Metrics evaluation
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='weighted', zero_division=0)
+    acc = accuracy_score(labels, preds)
+    return {
+        'accuracy': acc,
+        'f1': f1,
+        'precision': precision,
+        'recall': recall
+    }
 
 # --- Main Execution ---
 if __name__ == '__main__':
-    # Load and preprocess data
-    # This now returns DataFrames for X, which we'll iterate over for textualization
-    X_train_df, X_val_df, X_test_df, y_train, y_val, y_test, label_encoder, feature_columns_from_data = \
-        load_dataset(DATA_DIR, CLASS_CONFIG)
-
-    # Textualize the data
-    # FEATURES_TO_TEXTUALIZE should now be feature_columns_from_data
-    print("Textualizing training data...")
-    train_texts = [textualize_flow(row, feature_columns_from_data) for _, row in X_train_df.iterrows()]
-    print("Textualizing validation data...")
-    val_texts = [textualize_flow(row, feature_columns_from_data) for _, row in X_val_df.iterrows()]
-    print("Textualizing test data...")
-    test_texts = [textualize_flow(row, feature_columns_from_data) for _, row in X_test_df.iterrows()]
-
-    # Initialize tokenizer and model
+    # Initialization
+    print(f"Loading tokenizer for {MODEL_NAME}...")
     tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_NAME)
+
+    # Loading data
+    train_ds, val_ds, test_ds, label_encoder, og_train_labels, feature_names = load_and_prepare_data(
+        data_dir=DATA_DIR,
+        class_config=CLASS_CONFIG,
+        tokenizer=tokenizer,
+        max_seq_len=MAX_SEQ_LENGTH,
+        random_state=RANDOM_STATE
+    )
+
     num_labels = len(label_encoder.classes_)
-    model = RobertaForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=num_labels)
+    id2label = {i: label for i, label in enumerate(label_encoder.classes_)}
+    label2id = {label: i for i, label in enumerate(label_encoder.classes_)}
 
-    # Create datasets
-    train_dataset = IoMTFlowDataset(train_texts, y_train, tokenizer, MAX_SEQ_LENGTH)
-    val_dataset = IoMTFlowDataset(val_texts, y_val, tokenizer, MAX_SEQ_LENGTH)
-    test_dataset_for_eval = IoMTFlowDataset(test_texts, y_test, tokenizer, MAX_SEQ_LENGTH) # For final evaluation
+    print(f"Number of unique labels: {num_labels}")
+    print(f"Training dataset size: {len(train_ds)}")
+    print(f"Validation dataset size: {len(val_ds)}")
+    print(f"Test dataset size: {len(test_ds)}")
+    print(f"Features used for textualization: {feature_names}")
 
-    # --- Handle Class Imbalance (Example: Weighted Loss) ---
-    # Calculate class weights (inverse frequency)
-    # This needs to be done on the y_train before it's turned into a dataset if possible, or passed to Trainer
-    class_counts = np.bincount(y_train) # y_train should be the integer encoded labels for the training set
-    class_weights = 1. / class_counts
-    class_weights = class_weights / np.sum(class_weights) # Normalize
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(model.device if torch.cuda.is_available() else "cpu")
+    # RoBERTa initialization
+    print(f"Initializing RoBERTa model {MODEL_NAME} for {num_labels} classes...")
+    model = init_roberta_model(MODEL_NAME, num_labels, id2label=id2label, label2id=label2id)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    print(f"Model loaded on: {device}")
+
+    # Weight calculation and handling of imbalance
+    print("Calculating class weights for weighted loss...")
+    class_counts = np.bincount(og_train_labels)
+
+    # Avoid division by 0
+    class_weights = 1. / np.where(class_counts == 0, 1, class_counts) # ** Replace 0 counts with 1 to avoid division by 0
+    class_weights = class_weights / np.sum(class_weights) # Normalization
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
     
-    # Custom Trainer to handle weighted loss (if needed, or configure loss in TrainingArguments if possible)
-    # For PyTorch CrossEntropyLoss, weights are passed directly.
-    # The Hugging Face Trainer might require a custom `compute_loss` method if directly passing weights to `CrossEntropyLoss` is not straightforwardly supported for the Trainer's default loss.
-    # However, often the Trainer handles this well if the loss function inside the model (like RobertaForSequenceClassification) can accept weights,
-    # or by subclassing Trainer. Let's try simpler first.
-    # RobertaForSequenceClassification uses CrossEntropyLoss.
-    # We might need to modify the model's forward pass or use a custom Trainer.
-    # For now, we'll note this and proceed. If using a custom loop, you'd pass `weight=class_weights_tensor` to `nn.CrossEntropyLoss`.
-    
-    print(f"Calculated class weights: {class_weights_tensor}")
+    print(f"Class weights: {class_weights_tensor.cpu().numpy().tolist()}")
+    print(f"Corresponding classes: {list(label_encoder.classes_)}")
 
-
-    # Training arguments
+    # Training Arguments
+    print("Setting up training arguments...")
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         num_train_epochs=NUM_EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
         per_device_eval_batch_size=BATCH_SIZE,
         learning_rate=LEARNING_RATE,
-        warmup_steps=500, # Number of warmup steps for learning rate scheduler
+        warmup_ratio=0.1, # Warm up over 10% of training steps
         weight_decay=0.01,
         logging_dir=LOGGING_DIR,
-        logging_steps=100, # Log every 100 steps
-        evaluation_strategy="epoch", # Evaluate at the end of each epoch
-        save_strategy="epoch",       # Save model at the end of each epoch
-        load_best_model_at_end=True, # Load the best model found during training
-        metric_for_best_model="f1",  # Use f1 score to determine the best model
-        report_to="tensorboard",     # Enable tensorboard logging
-        fp16=torch.cuda.is_available(), # Enable mixed precision training if CUDA is available
+        logging_steps=max(1, len(train_ds) // (BATCH_SIZE * 4)), # Log a few times per epoch
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        report_to="tensorboard", # or "wandb", "mlflow", "none"
+        fp16=torch.cuda.is_available(), # Enable mixed precision if cuda is available
+        save_total_limit=2,
+        seed=RANDOM_STATE,
+        dataloader_num_workers=os.cpu_count() // 2 if os.cpu_count() else 1 # for faster data loading
     )
 
-    # Initialize Trainer
-    # To pass class_weights to the loss function used by RobertaForSequenceClassification,
-    # you might need to create a custom Trainer and override the compute_loss method.
-    class CustomTrainer(Trainer):
-        def compute_loss(self, model, inputs, return_outputs=False):
-            labels = inputs.pop("labels")
-            outputs = model(**inputs)
-            logits = outputs.get("logits")
-            # Ensure class_weights_tensor is on the same device as logits and labels
-            loss_fct = torch.nn.CrossEntropyLoss(weight=class_weights_tensor.to(logits.device))
-            loss = loss_fct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
-            return (loss, outputs) if return_outputs else loss
-
-    trainer = CustomTrainer( # Use CustomTrainer if you need weighted loss
+    # Init Trainer
+    print("Initializing Trainer...")
+    trainer = CustomTrainerWithWeightedLoss(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        compute_metrics=compute_metrics_fn,
-        tokenizer=tokenizer, # Useful for padding in DataCollatorWithPadding (default)
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        compute_metrics=compute_metrics,
+        tokenizer=tokenizer, # DataCollatorWithPadding will be used by default
+        class_weights=class_weights_tensor # pass weights to custom trainer
     )
-    
-    # --- Train the model ---
+
+    # Model Training
     print("Starting RoBERTa fine-tuning...")
-    trainer.train()
+    try:
+        trainer.train()
+    except Exception as e:
+        print(f"Error during training: {e}")
+        # TODO: potentially save some state or log more details
+        raise
 
-    # --- Evaluate the model ---
-    print("Evaluating on the test set...")
-    eval_results = trainer.evaluate(eval_dataset=test_dataset_for_eval)
-    print(f"Test set evaluation results: {eval_results}")
+    # Model evaluation on Test Set
+    print("\nEvaluating on the test dataset...")
+    test_results = trainer.evaluate(eval_dataset=test_ds)
+    print(f"Test set evaluation results: {test_results}")
 
-    # --- Save the model and tokenizer ---
-    trainer.save_model(os.path.join(OUTPUT_DIR, "final_model"))
-    tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_model_tokenizer"))
-    label_encoder_path = os.path.join(OUTPUT_DIR, "final_model_label_encoder.npy")
+    # Save final model
+    final_model_path = os.path.join(OUTPUT_DIR, "best_roberta_model") # load_best_model_at_end=True enables the trainer to save the best model
+    # Saving the very last state
+    model.save_pretrained(os.path.join(OUTPUT_DIR, "final_roberta_epoch_model"))
+    tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_roberta_epoch_model_tokenizer"))
+
+    # Saving label encoder classes for later use
+    label_encoder_path = os.path.join(final_model_path, "label_encoder_classes.npy")
+    if not os.path.exists(final_model_path):
+        os.makedirs(final_model_path) # if trainer didn't create it
     np.save(label_encoder_path, label_encoder.classes_)
-    print(f"Model, tokenizer, and label encoder classes saved to {OUTPUT_DIR}")
+    print(f"Best model, tokenizer, and label encoder classes saved to {final_model_path}")
 
-    # --- Placeholder for Baseline Model Training & Evaluation ---
-    # You would add functions here to train and evaluate traditional ML models
-    # using X_train_df, y_train (integer encoded), X_val_df, y_val, X_test_df, y_test.
-    # Remember to apply StandardScaler to X_train_df.values, X_val_df.values, X_test_df.values
-    # for these models.
+    # Baseline Model Training and Evaluation
+    # Use original numerical features to train them.
 
-    # Example:
-    # from sklearn.ensemble import RandomForestClassifier
-    # from sklearn.preprocessing import StandardScaler
-    #
-    # print("\nTraining Random Forest baseline...")
-    # scaler = StandardScaler()
-    # X_train_scaled_baseline = scaler.fit_transform(X_train_df.fillna(0)) # fillna(0) or other imputation
-    # X_test_scaled_baseline = scaler.transform(X_test_df.fillna(0))
-    #
-    # rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-    # rf_model.fit(X_train_scaled_baseline, y_train) # y_train is integer encoded
-    # y_pred_rf = rf_model.predict(X_test_scaled_baseline)
-    #
-    # rf_accuracy = accuracy_score(y_test, y_pred_rf)
-    # rf_precision, rf_recall, rf_f1, _ = precision_recall_fscore_support(y_test, y_pred_rf, average='weighted')
-    # print(f"Random Forest - Test Accuracy: {rf_accuracy:.4f}, F1: {rf_f1:.4f}, Precision: {rf_precision:.4f}, Recall: {rf_recall:.4f}")
+    # For this, you'd need to re-load or pass X_train_df, y_train (integer encoded), etc.
+    # from `load_and_prepare_datasets` before textualization if you want to use the raw features.
+    # Or, modify `load_and_prepare_datasets` to also return the raw numerical dataframes.
+
+    print("\nScript execution finished.")
