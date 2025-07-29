@@ -11,6 +11,7 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 # Import from modules
 from roberta_model import init_roberta_model, CustomTrainerWithWeightedLoss
 from data_loader import load_and_prepare_data
+from config import config
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -19,10 +20,10 @@ logger = logging.getLogger(__name__)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Data Directory
-DATA_DIR = "/data/user/bsindala/PhD/Research/DataSets/CICIoMT2024/WiFI and MQTT/attacks/CSV/" 
+DATA_DIR = config['data_dir'] 
 MODEL_NAME = "roberta-base"
-OUTPUT_DIR = "/data/user/bsindala/PhD/Research/LLM_Anomaly_Detection/models"
-LOGGING_DIR = "/data/user/bsindala/PhD/Research/LLM_Anomaly_Detection/logs"
+OUTPUT_DIR = config['output']
+LOGGING_DIR = config['logs'] 
 NUM_EPOCHS = 3#10 #3
 BATCH_SIZE = 16
 LEARNING_RATE = 5e-5
