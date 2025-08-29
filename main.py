@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import json
 import logging
+import wandb
 
 from transformers import RobertaTokenizerFast, TrainingArguments, DataCollatorWithPadding
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
@@ -24,6 +25,8 @@ DATA_DIR = config['data_dir']
 MODEL_NAME = "roberta-base"
 OUTPUT_DIR = config['output']
 LOGGING_DIR = config['logs'] 
+WANDB_API_KEY = config['wb_api_key']
+WANDB_PROJECT = 'llm-anomaly-detection'
 NUM_EPOCHS = 3 #10 #3
 BATCH_SIZE = 8 #16
 LEARNING_RATE = 1e-5
@@ -41,17 +44,32 @@ def compute_metrics(pred):
     preds = pred.predictions.argmax(-1)
     precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='weighted', zero_division=0)
     acc = accuracy_score(labels, preds)
-    return {
+    metrics = {
         'accuracy': acc,
         'f1': f1,
         'precision': precision,
         'recall': recall
     }
+    if wandb.run is not None:
+        wandb.log({"eval_" + k: v for k, v in metrics.items()})
+    return metrics
 
 # --- Main Execution ---
 if __name__ == '__main__':
     try:
-        # Initialization
+        # Intialization of WANDB
+        wandb.init(project=WAND_PROJECT, config={
+            "model_name": MODEL_NAME,
+            "num_epochs": NUM_EPOCHS,
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LEARNING_RATE,
+            "max_seq_length": MAX_SEQ_LENGTH,
+            "class_config": CLASS_CONFIG,
+            "sample_frac": SAMPLE_FRAC
+        })
+        logger.info(f'W&B initialized for project: {WANDB_PROJECT}')
+        
+        # Initialization of tokenizer
         logger.info(f"Loading tokenizer for {MODEL_NAME}...")
         tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_NAME)
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
@@ -71,12 +89,23 @@ if __name__ == '__main__':
         for i in range(min(3, len(train_ds))):
             logger.info(f"Text: {train_ds['text'][i]}")
             logger.info(f"Label: {label_encoder.inverse_transform([train_ds['label'][i]])[0]}")
+        
+        if wandb.run is not None:
+            wandb.log({
+                'training_size': len(train_ds),
+                'val_size': len(val_ds),
+                'test_size': len(test_ds),
+                'num_classes': len(label_encoder.classes_),
+                'features_used': len(feature_names)
+            })
     
         num_labels = len(label_encoder.classes_)
         id2label = {i: label for i, label in enumerate(label_encoder.classes_)}
         label2id = {label: i for i, label in enumerate(label_encoder.classes_)}
     
         logger.info(f"Number of labels: {num_labels}, Classes: {list(label_encoder.classes_)}, Test size: {len(test_ds)}")
+        if wandb.run is not None:
+            wandb.log({'classes': list(label_encoder.classes_)})
         
         # Validate class config
         expected_classes = {2: 2, 6: 6, 19: 19}.get(CLASS_CONFIG)
@@ -143,6 +172,8 @@ if __name__ == '__main__':
         logger.info("\nEvaluating on the test dataset...")
         test_results = trainer.evaluate(eval_dataset=test_ds)
         logger.info(f"Test set evaluation results: {test_results}")
+        if wandb.run is not None:
+            wandb.log({'test_' + k: v for k, v in test_results.items()})
     
         # Save final model
         if SAVE_EVAL_RESULTS:
@@ -161,8 +192,18 @@ if __name__ == '__main__':
         #label_encoder_path = os.path.join(final_model_path, "label_encoder_classes.npy")
         np.save(os.path.join(final_model_path, "label_encoder_classes.npy"), label_encoder.classes_)
         logger.info(f"Best model, tokenizer, and label encoder classes saved to {final_model_path}")
+        
+        if wandb.run is not None:
+            artifact = wandb.Artifact(MODEL_NAME, type='model')
+            artifact.add_dir(final_model_path)
+            wandb.log(artifact)
+            logger.info('Model and tokenizer saved as W&B artifact')
     
         logger.info("\nScript execution completed successfully.")
+        wandb.finish()
     except Exception as e:
         logger.info(f"ERROR: An exception occured during execution: {e}")
+        if wandb.run is not None:
+            wandb.log({'error': str(e)})
+            wandb.finish()
         raise

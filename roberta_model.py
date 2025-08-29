@@ -1,6 +1,7 @@
 # roberta_model.py
 import torch
 import logging
+import wandb
 from transformers import RobertaForSequenceClassification, Trainer
 from peft import LoraConfig, get_peft_model
 
@@ -31,7 +32,8 @@ def init_roberta_model(model_name, num_labels=2, id2label=None, label2id=None, d
             num_labels=num_labels,
             id2label=id2label,
             label2id=label2id,
-            hidden_dropout_prob=dropout if dropout is not None else 0.1
+            hidden_dropout_prob=dropout if dropout is not None else 0.1,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
         
         model.gradient_checkpointing_enable()
@@ -46,11 +48,18 @@ def init_roberta_model(model_name, num_labels=2, id2label=None, label2id=None, d
                 task_type='SEQ_CLS'
             )
             model = get_peft_model(model, lora_config)
-            logger.info(f'Applied LoRA with rank={lora_r}')
+            
+            # Logging trainable parameters
+            total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f'Applied LoRA with rank={lora_r}, trainable params: {total_params}')
+            if wandb.run is not None:
+                wandb.log({"trainable_params": total_params, "lora_rank": lora_r})
         
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.to(device)
         logger.info(f'Model moved to device: {device}')
+        if wandb.run is not None:
+            wandb.log({"device": str(device)})
 
         return model
         
@@ -71,6 +80,8 @@ class CustomTrainerWithWeightedLoss(Trainer):
             weights = torch.tensor(list(class_weights.values()), dtype=torch.float32)
             weights = weights / weights.sum() * len(weights)
             self.class_weights = weights.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+            if wandb.run is None:
+                wandb.log({"class_weights": {i: w.item() for i, w in enumerate(self.class_weights)}})
         else:
             self.class_weights = None
         logger.info(f'Class weights initialized: {self.class_weights}')
@@ -93,6 +104,8 @@ class CustomTrainerWithWeightedLoss(Trainer):
             logits = outputs.logits
             loss_fnct = torch.nn.CrossEntropyLoss(weight=self.class_weights)
             loss = loss_fnct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+            if wandb.run is not None:
+                wandb.log({"batch_loss": loss.item()})
     
             return (loss, outputs) if return_outputs else loss
         except Exception as e:
