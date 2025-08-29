@@ -58,7 +58,8 @@ def compute_metrics(pred):
 if __name__ == '__main__':
     try:
         # Intialization of WANDB
-        wandb.init(project=WAND_PROJECT, config={
+        wandb.login(key=WANDB_API_KEY)
+        wandb.init(project=WANDB_PROJECT, config={
             "model_name": MODEL_NAME,
             "num_epochs": NUM_EPOCHS,
             "batch_size": BATCH_SIZE,
