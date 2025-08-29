@@ -5,10 +5,11 @@ import pandas as pd
 import numpy as np
 import logging
 
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
-from datasets import Dataset as HFDataset
+from datasets import load_dataset, Dataset
+from transformers import RobertaTokenizer
 #from config import config
 
 # Logging
@@ -87,20 +88,7 @@ ATTACK_CATEGORIES_2 = { #
 }
 
 def get_attack_category(label, class_config):
-    # Determine which category mapping to use
-    # categories_to_use = {
-    #     2: ATTACK_CATEGORIES_2,
-    #     6: ATTACK_CATEGORIES_6,
-    #     19: ATTACK_CATEGORIES_19
-    # }.get(class_config)
-    
-    # if not categories_to_use:
-    #     raise ValueError(f"Invalid class_config: {class_config}. Choose 2, 6, or 19.")
-
-    # category = categories_to_use.get(label, 'Unknown')
-    # if category == 'Unknown':
-    #     logger.warning(f"Could not map label: {label} with class_config: {class_config}. Returning 'Unknown'.")
-    # return category
+    """Map filename to attack category based on the class config."""
     if class_config == 2:
         categories = ATTACK_CATEGORIES_2
     elif class_config == 6:
@@ -111,15 +99,17 @@ def get_attack_category(label, class_config):
     for key in categories:
         if key in label:
             return categories[key]
+    logger.warning(f"Could not map label: {label} with class_config: {class_config}. Returning 'Unknown'.")
     return 'Unknown Category'
     
 def textualize_flow(row, feature_names, sep_token="</s>"):
-    """Coverting to text"""
+    """Coverting flow data to concise text for RoBERTa, minimizing bloat."""
     text_parts = []
     for feature_name in feature_names:
         if feature_name in row:
             value = row[feature_name]
-            clean_feature_name = feature_name.replace('_',' ').replace('-',' ').replace('/',' ') #.replace(' ', '_').replace('/', '_').replace('.','_')
+            # Simplify feature names to reduce token count
+            clean_feature_name = feature_name.replace('_',' ').replace('-',' ').replace('/',' ')
             
             if pd.isnull(value):
                 value = "missing"
@@ -130,16 +120,20 @@ def textualize_flow(row, feature_names, sep_token="</s>"):
             else:
                 value = str(value)
                 
-            if 'bytes' in clean_feature_name.lower():
-                text_parts.append(f"The {clean_feature_name} is {value} bytes")
-            elif 'time' in clean_feature_name.lower() or 'duration' in clean_feature_name.lower():
-                text_parts.append(f"The {clean_feature_name} is {value} seconds")
-            else:
-                text_parts.append(f"The {clean_feature_name} is {value}")
+            # Concise key-value format 
+            text_parts.append(f"{clean_feature_name}:{value})
+                
+            # if 'bytes' in clean_feature_name.lower():
+            #     text_parts.append(f"The {clean_feature_name} is {value} bytes")
+            # elif 'time' in clean_feature_name.lower() or 'duration' in clean_feature_name.lower():
+            #     text_parts.append(f"The {clean_feature_name} is {value} seconds")
+            # else:
+            #     text_parts.append(f"The {clean_feature_name} is {value}")
             
     return f" {sep_token}".join(text_parts)
                          
-def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len, test_size_for_val=0.2, random_state=42, sample_size=None):
+def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, simpla_frac=0.2):#sample_size=None):
+    """Load and prepare CICIoMT2024 dataset efficiently with streaming and subsampling."""
     logger.info(f"Loading and preparing datasets for {class_config}-class configuration...")
     
     train_path = os.path.join(data_dir, "train")
@@ -150,97 +144,99 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len, test_s
     if not os.path.exists(test_path) or not os.path.isdir(test_path):
         raise FileNotFoundError(f"Testing directory not found or is not a directory: {test_path}.")
 
+    # Using streaming to load data efficiently
     train_files = [os.path.join(train_path, f) for f in os.listdir(train_path) if f.endswith('.csv')]
     test_files = [os.path.join(test_path, f) for f in os.listdir(test_path) if f.endswith('.csv')]
 
-    if not train_files:
-        raise FileNotFoundError(f"No CSV files found in training directory: {train_path}")
-    if not test_files:
-        raise FileNotFoundError(f"No CSV files found in test directory: {test_path}.")
+    if not train_files or not test_files:
+        raise FileNotFoundError(f"No CSV files found in training or test directories.")
 
-    df_list_train = [pd.read_csv(f).assign(filename=os.path.basename(f)) for f in train_files]
-    df_list_test = [pd.read_csv(f).assign(filename=os.path.basename(f)) for f in test_files]
-
-    train_df = pd.concat(df_list_train, ignore_index=True)
-    test_df = pd.concat(df_list_test, ignore_index=True)
+    # Load with streaming=True to avoid memory overload
+    logger.info("Loading datasets with streaming...")
+    train_dataset = load_dataset('csv', data_files=train_files, streaming=True)
+    test_dataset = load_dataset('csv', data_files=test_files, streaming=True)
     
-    # Handle missing values
-    train_df = train_df.fillna(train_df.mean(numeric_only=True))
-    test_df = test_df.fillna(test_df.mean(numeric_only=True))
+    def process_batch(batch, feature_cols):
+        """Process a batch of data for textualization and labeling"""
+        df = pd.DataFrame(batch)
+        df = df.fillna(df.mean(numeric_only=True))
+        df['Attack_Type'] = df['filename'].apply(lambda x: get_attack_category(x, class_config))
+        df = df[df['Attack_Type'] != 'Unknown Category'].copy()
+        if df.empty:
+            logger.warning('Empty batch after filtering unknown categories.')
+            return None
+        feature_cols = [col for col in df.columns if col not in ['filename', 'Attack_Type']]
+        df['text'] = df.apply(lambda row: textualize_flow(row, feature_cols), axis=1)
+        return df[['text', 'Attack_Type']]
+        
+    # Process train and test data
+    feature_cols = None
+    train_texts, train_labels = [], []
+    test_texts, test_labels = [], []
     
-    if sample_size:
-        logger.info(f"Sampling {sample_size} instances from training data...")
-        train_df = train_df.sample(n=sample_size, random_state=random_state)
-
-    train_df['Attack_Type'] = train_df['filename'].apply(lambda x: get_attack_category(x, class_config)) #filename for Label
-    test_df['Attack_Type'] = test_df['filename'].apply(lambda x: get_attack_category(x, class_config)) #filename for Label
-
-    # Drop rows where Attack_Type could not be determined
-    train_df = train_df[train_df['Attack_Type'] != 'Unknown Category'].copy()
-    test_df = test_df[test_df['Attack_Type'] != 'Unknown Category'].copy()
-    
-    if train_df.empty or test_df.empty:
-        raise ValueError("No data remaining after filtering for unknown categories. Check filename and category mappings.")
-    
-    # Feature column definition
-    feature_cols = [col for col in train_df.columns if col not in ['filename', 'Attack_Type']] #filename for Label
-
-    # Textualize data
-    logger.info("Textualizing data...")
-    train_df['text'] = train_df.apply(lambda row: textualize_flow(row, feature_cols), axis=1)
-    test_df['text'] = test_df.apply(lambda row: textualize_flow(row, feature_cols), axis=1)
+    logger.info('Processing train data...')
+    for batch in train_dataset['train']:
+        df_batch = process_batch(batch, feature_cols)
+        if df_batch is not None:
+            if feature_cols is None:
+                feature_cols = [col for col in df_batch.columns if col not in ['text', 'Attack_Type', 'filename']]
+            train_texts.extend(df_batch['text'].tolist())
+            train_labels.extend(df_batch['Attack_Type'].tolist())
+            
+    logger.info('Processing test data...')
+    for batch in test_dataset['train']:
+        df_batch = process_batch(batch, feature_cols)
+        if df_batch is not None:
+            test_texts.extend(df_batch['text'].tolist())
+            test_labels.extend(df_batch['Attack_Type'].tolist())
+            
+    # Sampling train data
+    if sample_frac < 1.0:
+        logger.info(f'Subsampling {sample_frac*100}% of training data...')
+        indices = np.random.choice(len(train_texts), size=int(len(train_texts) * sample_frac), replace=False)
+        train_texts = [train_texts[i] for i in indices]
+        train_labels = [train_labels[i] for i in indices]
 
     # Encoding labels
-    all_labels = pd.concat([train_df['Attack_Type'], test_df['Attack_Type']]).unique()
     label_encoder = LabelEncoder()
+    all_labels = list(set(train_labels + test_labels) #pd.concat([train_df['Attack_Type'], test_df['Attack_Type']]).unique()
     label_encoder.fit(all_labels)
-    train_df['label'] = label_encoder.transform(train_df['Attack_Type'])
-    test_df['label'] = label_encoder.transform(test_df['Attack_Type'])
+    train_labels = label_encoder.transform(train_labels)
+    test_labels = label_encoder.transform(test_labels)
     
     num_classes = len(label_encoder.classes_)
     logger.info(f"Number of classes: {num_classes}, classes: {list(label_encoder.classes_)}")
-    logger.info(f"Class mapping: {dict(zip(label_encoder.classes_, range(num_classes)))}")
-    
-    logger.info(f"Training samples (before split): {len(train_df)}")
-    logger.info(f"Test samples: {len(test_df)}")
-    
-    logger.info("Textualized Training Dataset\n", train_df.head())
-    logger.info("Textualized Testing Dataset\n", test_df.head())
 
     # Split training data to create a validation set
     train_texts, val_texts, train_labels, val_labels = train_test_split(
-        train_df['text'].tolist(), 
-        train_df['label'].tolist(), 
+        train_texts, 
+        train_labels, 
         test_size=test_size_for_val, 
         random_state=random_state, 
-        stratify=train_df['label'].tolist()
+        stratify=train_labels
     )
-
-    test_texts = test_df['text'].tolist()
-    test_labels = test_df['label'].tolist()
     
-    logger.info(f"Training samples: {len(train_texts)}")
-    logger.info(f"Validation samples: {len(val_texts)}")
-    logger.info(f"Test samples: {len(test_texts)}")
+    logger.info(f'Training samples: {len(train_texts)}, Validation samples: {len(val_texts)}, Test samples: {len(test_texts)}')
 
     # Tokenize
+    tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
     def tokenize_function(examples):
-        return tokenizer(examples['text'], padding=True, truncation=True, max_length=max_seq_len) #padding='max_length'
+        return tokenizer(examples['text'], padding='max_length', truncation=True, max_length=max_seq_len)
     
-    train_ds = HFDataset.from_dict({'text': train_texts, 'label': train_labels}).map(tokenize_function, batched=True)
-    val_ds = HFDataset.from_dict({'text': val_texts, 'label': val_labels}).map(tokenize_function, batched=True)
-    test_ds = HFDataset.from_dict({'text': test_texts, 'label': test_labels}).map(tokenize_function, batched=True)
+    train_ds = Dataset.from_dict({'text': train_texts, 'label': train_labels}).map(tokenize_function, batched=True, batch_size=1000)
+    val_ds = Dataset.from_dict({'text': val_texts, 'label': val_labels}).map(tokenize_function, batched=True, batch_size=1000)
+    test_ds = Dataset.from_dict({'text': test_texts, 'label': test_labels}).map(tokenize_function, batched=True, batch_size=1000)
 
     # Calculating class weights
-    #og_train_labels_for_weights = train_df['label'].tolist()
     try:
         class_weights = compute_class_weight(
-            class_weight='balanced',
+            #class_weight='balanced',
+            'balanced',
             classes=np.unique(train_labels),
             y=train_labels
         )
         class_weights = dict(enumerate(class_weights))
-        logger.info(f"Computed class weights: {class_weights}")
+        logger.info(f"Class weights: {class_weights}")
     except Exception as e:
         logger.error(f"Failed to compute class weights: {e}")
         class_weights = {i: 1.0 for i in range(num_classes)}
