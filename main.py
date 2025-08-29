@@ -27,6 +27,7 @@ OUTPUT_DIR = config['output']
 LOGGING_DIR = config['logs'] 
 WANDB_API_KEY = config['wb_api_key']
 WANDB_PROJECT = 'llm-anomaly-detection'
+WANDB_ENTITY = 'bsindala-university-of-alabama-at-birmigham'
 NUM_EPOCHS = 3 #10 #3
 BATCH_SIZE = 8 #16
 LEARNING_RATE = 1e-5
@@ -59,15 +60,19 @@ if __name__ == '__main__':
     try:
         # Intialization of WANDB
         wandb.login(key=WANDB_API_KEY)
-        wandb.init(project=WANDB_PROJECT, config={
-            "model_name": MODEL_NAME,
-            "num_epochs": NUM_EPOCHS,
-            "batch_size": BATCH_SIZE,
-            "learning_rate": LEARNING_RATE,
-            "max_seq_length": MAX_SEQ_LENGTH,
-            "class_config": CLASS_CONFIG,
-            "sample_frac": SAMPLE_FRAC
-        })
+        wandb.init(
+            entity =WANDB_ENTITY,
+            project=WANDB_PROJECT, 
+            config={
+                "model_name": MODEL_NAME,
+                "num_epochs": NUM_EPOCHS,
+                "batch_size": BATCH_SIZE,
+                "learning_rate": LEARNING_RATE,
+                "max_seq_length": MAX_SEQ_LENGTH,
+                "class_config": CLASS_CONFIG,
+                "sample_frac": SAMPLE_FRAC
+            }
+        )
         logger.info(f'W&B initialized for project: {WANDB_PROJECT}')
         
         # Initialization of tokenizer
