@@ -9,7 +9,6 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from datasets import load_dataset, Dataset
-from transformers import RobertaTokenizer
 #from config import config
 
 # Logging
@@ -122,13 +121,6 @@ def textualize_flow(row, feature_names, sep_token="</s>"):
                 
             # Concise key-value format 
             text_parts.append(f"{clean_feature_name}:{value})
-                
-            # if 'bytes' in clean_feature_name.lower():
-            #     text_parts.append(f"The {clean_feature_name} is {value} bytes")
-            # elif 'time' in clean_feature_name.lower() or 'duration' in clean_feature_name.lower():
-            #     text_parts.append(f"The {clean_feature_name} is {value} seconds")
-            # else:
-            #     text_parts.append(f"The {clean_feature_name} is {value}")
             
     return f" {sep_token}".join(text_parts)
                          
@@ -156,6 +148,14 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
     train_dataset = load_dataset('csv', data_files=train_files, streaming=True)
     test_dataset = load_dataset('csv', data_files=test_files, streaming=True)
     
+    # Default to key features if not provided
+    if selected_features is None:
+        selected_features = [
+            'Src IP', 'Dst IP', 'Protocol', 'Flow Duration', 'Pkt Len Mean',
+            'Fwd Pkt Len Mean', 'Bwd Pkt Len Mean', 'Flow Pkts/s', 'Flow IAT Mean',
+            'Fwd IAT Tot', 'Bwd IAT Tot', 'Fwd PSH Flags', 'BWd PSH Flags'
+        ]
+    
     def process_batch(batch, feature_cols):
         """Process a batch of data for textualization and labeling"""
         df = pd.DataFrame(batch)
@@ -170,7 +170,7 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
         return df[['text', 'Attack_Type']]
         
     # Process train and test data
-    feature_cols = None
+    feature_cols = selected_features
     train_texts, train_labels = [], []
     test_texts, test_labels = [], []
     
@@ -178,8 +178,8 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
     for batch in train_dataset['train']:
         df_batch = process_batch(batch, feature_cols)
         if df_batch is not None:
-            if feature_cols is None:
-                feature_cols = [col for col in df_batch.columns if col not in ['text', 'Attack_Type', 'filename']]
+            # if feature_cols is None:
+            #     feature_cols = [col for col in df_batch.columns if col not in ['text', 'Attack_Type', 'filename']]
             train_texts.extend(df_batch['text'].tolist())
             train_labels.extend(df_batch['Attack_Type'].tolist())
             
@@ -219,7 +219,6 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
     logger.info(f'Training samples: {len(train_texts)}, Validation samples: {len(val_texts)}, Test samples: {len(test_texts)}')
 
     # Tokenize
-    tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
     def tokenize_function(examples):
         return tokenizer(examples['text'], padding='max_length', truncation=True, max_length=max_seq_len)
     

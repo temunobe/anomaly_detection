@@ -2,36 +2,61 @@
 import torch
 import logging
 from transformers import RobertaForSequenceClassification, Trainer
+from peft import LoraConfig, get_peft_model
 
 # Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def init_roberta_model(model_name, num_labels, id2label=None, label2id=None, dropout=None):
+def init_roberta_model(model_name, num_labels=2, id2label=None, label2id=None, dropout=0.1, use_lora=True, lora_r=16):
     """
     Initialize RoBERTa model for sequence classification
     
     Args:
-        model_name (str): Name or path of the pretrained RoBERTa model.
-        num_labels (int): Number of output labels
-        id2label (dict, optional): Mapping from label IDs to label names
+        model_name (str): Name or path of the pretrained RoBERTa model (default: 'roberta-base')
+        num_labels (int): Number of output labels (e.g., 2 for binary anomaly detection)
+        id2label (dict, optional): Mapping from label IDs to label names 
         label2id (dict, optional): Mapping from label names to label IDs
-        dropout (float, optional): Custom dropout rate for classifier head
-        
+        dropout (float, optional): Custom dropout rate for classifier head (default: 0.1)
+        use_lora (bool): Whether to apply LoRA for parameter-efficient fine-tuning (default: True)
+        lora_r (int): LoRA rank parameter (default: 16)
     Returns: 
-        RobertaForSequenceClassification: Initialized model
+        RobertaForSequenceClassification: Initialized model, optionally with LoRA
     """
     
-    logging.info(f"Initializing RoBERTa model: {model_name} with {num_labels} labels")
-    model = RobertaForSequenceClassification.from_pretrained(
-        model_name,
-        num_labels=num_labels,
-        id2label=id2label,
-        label2id=label2id,
-        hidden_dropout_prob=dropout if dropout is not None else 0.1
-    )
+    logging.info(f"Initializing RoBERTa model: {model_name} with {num_labels} labels, LoRA={use_lora}")
+    try:
+        model = RobertaForSequenceClassification.from_pretrained(
+            model_name,
+            num_labels=num_labels,
+            id2label=id2label,
+            label2id=label2id,
+            hidden_dropout_prob=dropout if dropout is not None else 0.1
+        )
+        
+        model.gradient_checkpointing_enable()
+        
+        if use_lora:
+            lora_config = LoraConfig(
+                r=lora_r,
+                lora_alpha=32,
+                target_modules=['query', 'value'],
+                lora_dropout=0.05,
+                bias='none',
+                task_type='SEQ_CLS'
+            )
+            model = get_peft_model(model, lora_config)
+            logger.info(f'Applied LoRA with rank={lora_r}')
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model.to(device)
+        logger.info(f'Model moved to device: {device}')
 
-    return model
+        return model
+        
+    except Exception as e:
+        logger.error(f'Failed to initialize model: {e}')
+        raise
 
 class CustomTrainerWithWeightedLoss(Trainer):
     """
@@ -42,9 +67,15 @@ class CustomTrainerWithWeightedLoss(Trainer):
     """
     def __init__(self, *args, class_weights=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.class_weights = class_weights
+        if class_weights is not None:
+            weights = torch.tensor(list(class_weights.values()), dtype=torch.float32)
+            weights = weights / weights.sum() * len(weights)
+            self.class_weights = weights.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        else:
+            self.class_weights = None
+        logger.info(f'Class weights initialized: {self.class_weights}')
 
-    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+    def compute_loss(self, model, inputs, return_outputs=False):
         """
         Compute the weighted cross-entropy loss
         
@@ -56,13 +87,15 @@ class CustomTrainerWithWeightedLoss(Trainer):
         Returns:
             loss or (loss, outputs)
         """
-        labels = inputs.pop('labels')
-        outputs = model(**inputs)
-        logits = outputs.logits#get('logits')
-
-        weights_tensor = self.class_weights.to(logits.device) if self.class_weights is not None else None
-        loss_fnct = torch.nn.CrossEntropyLoss(weight=weights_tensor)
-        loss = loss_fnct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
-
-        return (loss, outputs) if return_outputs else loss
+        try:
+            labels = inputs.pop('labels')
+            outputs = model(**inputs)
+            logits = outputs.logits
+            loss_fnct = torch.nn.CrossEntropyLoss(weight=self.class_weights)
+            loss = loss_fnct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+    
+            return (loss, outputs) if return_outputs else loss
+        except Exception as e:
+            logger.error(f'Error computing loss: {e}')
+            raise
 
