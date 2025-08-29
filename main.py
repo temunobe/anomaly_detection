@@ -17,21 +17,22 @@ from config import config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = 'true' #"false"
 
 # Data Directory
 DATA_DIR = config['data_dir'] 
 MODEL_NAME = "roberta-base"
 OUTPUT_DIR = config['output']
 LOGGING_DIR = config['logs'] 
-NUM_EPOCHS = 3#10 #3
+NUM_EPOCHS = 3 #10 #3
 BATCH_SIZE = 16
 LEARNING_RATE = 5e-5
-MAX_SEQ_LENGTH = 128
+MAX_SEQ_LENGTH = 256 #128
 CLASS_CONFIG = 19 # Choose 19, 6, or 2 based on your experiment
 RANDOM_STATE = 42
 SAVE_EVAL_RESULTS = True
-SAMPLE_SIZE = None #10000 # For testing, None=Full Dataset
+SAMPLE_SIZE = 1000000 #None # For testing, None=Full Dataset
+LABEL_COLUMN = 'Attack_Type'
 
 # Metrics evaluation
 def compute_metrics(pred):
@@ -113,7 +114,7 @@ if __name__ == '__main__':
     
         # Weight calculation and handling of imbalance
         logger.info("Using class weights from data_loader...")
-        class_weights_tensor = torch.tensor(list(class_weigths.values()), dtype=torch.float).to(device)
+        class_weights_tensor = torch.tensor(list(class_weights.values()), dtype=torch.float).to(device)
         logger.info(f"Class weights: {class_weights_tensor.cpu().numpy().tolist()}")
         logger.info(f"Corresponding classes: {list(label_encoder.classes_)}")
     
@@ -163,7 +164,7 @@ if __name__ == '__main__':
             train_dataset=train_ds,
             eval_dataset=val_ds,
             compute_metrics=compute_metrics,
-            processing_class=data_collator,#tokenizer=tokenizer, # DataCollatorWithPadding will be used by default
+            data_collator=data_collator,#tokenizer=tokenizer, # DataCollatorWithPadding will be used by default
             class_weights=class_weights_tensor # pass weights to custom trainer
         )
     
