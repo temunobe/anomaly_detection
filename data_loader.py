@@ -120,11 +120,11 @@ def textualize_flow(row, feature_names, sep_token="</s>"):
                 value = str(value)
                 
             # Concise key-value format 
-            text_parts.append(f"{clean_feature_name}:{value})
+            text_parts.append(f"{clean_feature_name}:{value}")
             
     return f" {sep_token}".join(text_parts)
                          
-def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, simpla_frac=0.2):#sample_size=None):
+def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2):#sample_size=None):
     """Load and prepare CICIoMT2024 dataset efficiently with streaming and subsampling."""
     logger.info(f"Loading and preparing datasets for {class_config}-class configuration...")
     
@@ -149,17 +149,25 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
     test_dataset = load_dataset('csv', data_files=test_files, streaming=True)
     
     # Default to key features if not provided
-    if selected_features is None:
-        selected_features = [
-            'Src IP', 'Dst IP', 'Protocol', 'Flow Duration', 'Pkt Len Mean',
-            'Fwd Pkt Len Mean', 'Bwd Pkt Len Mean', 'Flow Pkts/s', 'Flow IAT Mean',
-            'Fwd IAT Tot', 'Bwd IAT Tot', 'Fwd PSH Flags', 'BWd PSH Flags'
-        ]
+#     selected_features = []
+#     if selected_features is None:
+#         selected_features = [
+#             'Src IP', 'Dst IP', 'Protocol', 'Flow Duration', 'Pkt Len Mean',
+#             'Fwd Pkt Len Mean', 'Bwd Pkt Len Mean', 'Flow Pkts/s', 'Flow IAT Mean',
+#             'Fwd IAT Tot', 'Bwd IAT Tot', 'Fwd PSH Flags', 'BWd PSH Flags'
+#         ]
     
-    def process_batch(batch, feature_cols):
+    def process_batch(batch):
         """Process a batch of data for textualization and labeling"""
+        if isinstance(batch, dict):
+            batch = [batch]
+            
         df = pd.DataFrame(batch)
         df = df.fillna(df.mean(numeric_only=True))
+        
+        if 'filename' not in df.columns:
+            raise KeyError("Missing 'filename' column in batch. Make sure it's injected before processing.")
+            
         df['Attack_Type'] = df['filename'].apply(lambda x: get_attack_category(x, class_config))
         df = df[df['Attack_Type'] != 'Unknown Category'].copy()
         if df.empty:
@@ -170,25 +178,37 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
         return df[['text', 'Attack_Type']]
         
     # Process train and test data
-    feature_cols = selected_features
+    #feature_cols = selected_features
     train_texts, train_labels = [], []
     test_texts, test_labels = [], []
     
     logger.info('Processing train data...')
-    for batch in train_dataset['train']:
-        df_batch = process_batch(batch, feature_cols)
-        if df_batch is not None:
-            # if feature_cols is None:
-            #     feature_cols = [col for col in df_batch.columns if col not in ['text', 'Attack_Type', 'filename']]
-            train_texts.extend(df_batch['text'].tolist())
-            train_labels.extend(df_batch['Attack_Type'].tolist())
-            
+    for file_path in train_files:
+        filename = os.path.basename(file_path)
+        train_dataset = load_dataset('csv', data_files={'train': file_path}, streaming=True)['train']
+        for example in train_dataset:
+            if isinstance(example, dict):
+                example['filename'] = filename
+                df_batch = process_batch(example)
+                if df_batch is not None:
+                    train_texts.extend(df_batch['text'].tolist())
+                    train_labels.extend(df_batch['Attack_Type'].tolist())
+            else:
+                logger.warning(f'Unexcepted data format in {filename}: {type(example)}')
+
     logger.info('Processing test data...')
-    for batch in test_dataset['train']:
-        df_batch = process_batch(batch, feature_cols)
-        if df_batch is not None:
-            test_texts.extend(df_batch['text'].tolist())
-            test_labels.extend(df_batch['Attack_Type'].tolist())
+    for file_path in test_files:
+        filename = os.path.basename(file_path)
+        test_dataset = load_dataset('csv', data_files={'test': file_path}, streaming=True)['test']
+        for example in test_dataset:
+            if isinstance(example, dict):
+                example['filename'] = filename
+                df_batch = process_batch(example)
+                if df_batch is not None:
+                    test_texts.extend(df_batch['text'].tolist())
+                    test_labels.extend(df_batch['Attack_Type'].tolist())
+            else:
+                logger.warning(f'Unexcepted data format in {filename}: {type(example)}')
             
     # Sampling train data
     if sample_frac < 1.0:
@@ -199,7 +219,7 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
 
     # Encoding labels
     label_encoder = LabelEncoder()
-    all_labels = list(set(train_labels + test_labels) #pd.concat([train_df['Attack_Type'], test_df['Attack_Type']]).unique()
+    all_labels = list(set(train_labels + test_labels)) #pd.concat([train_df['Attack_Type'], test_df['Attack_Type']]).unique()
     label_encoder.fit(all_labels)
     train_labels = label_encoder.transform(train_labels)
     test_labels = label_encoder.transform(test_labels)
