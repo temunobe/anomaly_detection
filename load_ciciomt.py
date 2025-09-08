@@ -67,7 +67,7 @@ def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, te
         
         # select features
         cols = feature_cols or [col for col in df.columns if col not in ['filename', 'Attack_Type']]
-        df['text'] = df.apply(lambda row: textualize_flow(rows, cols), axis=1)
+        df['text'] = df.apply(lambda row: textualize_flow(row, cols), axis=1)
         return df[['text', 'Attack_Type']]
     # Using streaming to load data efficiently
     train_files = [os.path.join(train_path, f) for f in os.listdir(train_path) if f.endswith('.csv')]
