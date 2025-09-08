@@ -18,3 +18,14 @@ config: {'model_name': 'roberta-base', 'num_epochs': 3, 'batch_size': 8, 'learni
 2025-09-02 13:52:16,498 INFO    MainThread:130341 [wandb_run.py:_redirect():2434] Redirects installed.
 2025-09-02 13:52:16,498 INFO    MainThread:130341 [wandb_init.py:init():1057] run started, returning control to user process
 2025-09-02 14:42:30,766 INFO    MainThread:130341 [wandb_init.py:_post_run_cell_hook():575] [no run ID] resuming backend
+2025-09-02 14:46:48,620 ERROR   wandb-AsyncioManager-main:130341 [asyncio_manager.py:fn_wrap_exceptions():183] Uncaught exception in run_soon callback.
+Traceback (most recent call last):
+  File "/home/bsindala/.conda/envs/anomalyenv_v310/lib/python3.10/site-packages/wandb/sdk/lib/asyncio_manager.py", line 181, in fn_wrap_exceptions
+    await fn()
+  File "/home/bsindala/.conda/envs/anomalyenv_v310/lib/python3.10/site-packages/wandb/sdk/lib/service/service_client.py", line 65, in _send_server_request
+    await self._writer.drain()
+  File "/home/bsindala/.conda/envs/anomalyenv_v310/lib/python3.10/asyncio/streams.py", line 371, in drain
+    await self._protocol._drain_helper()
+  File "/home/bsindala/.conda/envs/anomalyenv_v310/lib/python3.10/asyncio/streams.py", line 167, in _drain_helper
+    raise ConnectionResetError('Connection lost')
+ConnectionResetError: Connection lost

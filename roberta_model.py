@@ -32,9 +32,10 @@ def init_roberta_model(model_name, num_labels=2, id2label=None, label2id=None, d
             num_labels=num_labels,
             id2label=id2label,
             label2id=label2id,
-            hidden_dropout_prob=dropout if dropout is not None else 0.1,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
+        
+        model.config.hidden_dropout_prob = dropout
         
         model.gradient_checkpointing_enable()
         
@@ -86,7 +87,7 @@ class CustomTrainerWithWeightedLoss(Trainer):
             self.class_weights = None
         logger.info(f'Class weights initialized: {self.class_weights}')
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Compute the weighted cross-entropy loss
         
@@ -102,7 +103,9 @@ class CustomTrainerWithWeightedLoss(Trainer):
             labels = inputs.pop('labels')
             outputs = model(**inputs)
             logits = outputs.logits
-            loss_fnct = torch.nn.CrossEntropyLoss(weight=self.class_weights)
+            weight = self.class_weights.to(device=logits.device, dtype=logits.dtype) if self.class_weights is not None else None
+            labels = labels.to(dtype=torch.long)
+            loss_fnct = torch.nn.CrossEntropyLoss(weight=weight)
             loss = loss_fnct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
             if wandb.run is not None:
                 wandb.log({"batch_loss": loss.item()})

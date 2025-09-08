@@ -1,4 +1,4 @@
-# main.py
+# run_roberta_ciciomt.py
 import os
 import numpy as np
 import torch
@@ -6,12 +6,12 @@ import json
 import logging
 import wandb
 
-from transformers import RobertaTokenizerFast, TrainingArguments, DataCollatorWithPadding
+from transformers import RobertaTokenizerFast, TrainingArguments, DataCollatorWithPadding, EarlyStoppingCallback
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 # Import from modules
 from roberta_model import init_roberta_model, CustomTrainerWithWeightedLoss
-from data_loader import load_and_prepare_data
+from load_ciciomt import load_and_prepare_data
 from config import config
 
 # Logging
@@ -21,19 +21,20 @@ logger = logging.getLogger(__name__)
 os.environ["TOKENIZERS_PARALLELISM"] = 'true'
 
 # Data Directory
-DATA_DIR = config['data_dir'] 
-OUTPUT_DIR = config['output']
+DATA_DIR = config['ciciomt_data_dir'] 
 MODEL_NAME = "roberta-base"
+OUTPUT_DIR = config['output']
 LOGGING_DIR = config['logs'] 
-WANDB_API_KEY = config['wb_api_key']
-WANDB_PROJECT = 'llm-anomaly-detection'
-WANDB_ENTITY = 'bsindala-university-of-alabama-at-birmigham'
-NUM_EPOCHS = 10 #3
-BATCH_SIZE = 8 #16
-LEARNING_RATE = 1e-5
-MAX_SEQ_LENGTH = 256 #128
-RANDOM_STATE = 42
-SAMPLE_FRAC = 1.0 # 20% for faster prototyping
+WANDB_API_KEY = config['wb_api_key_ciciomt']
+WANDB_PROJECT = config['wb_project_ciciomt']
+WANDB_ENTITY = config['wb_entity']
+NUM_EPOCHS = config['epochs']
+BATCH_SIZE = config['batch_size']
+LEARNING_RATE = config['lr']
+MAX_SEQ_LENGTH = config['max_seq_len']
+CLASS_CONFIG = config['class_config'] 
+RANDOM_STATE = config['rand_state']
+SAMPLE_FRAC = config['sample_frac'] 
 SAVE_EVAL_RESULTS = True
 
 # Metrics evaluation
@@ -56,7 +57,6 @@ def compute_metrics(pred):
 if __name__ == '__main__':
     try:
         # Intialization of WANDB
-        logger.info("Logging into Weights & Biases...")
         wandb.login(key=WANDB_API_KEY)
         wandb.init(
             entity =WANDB_ENTITY,
@@ -67,6 +67,7 @@ if __name__ == '__main__':
                 "batch_size": BATCH_SIZE,
                 "learning_rate": LEARNING_RATE,
                 "max_seq_length": MAX_SEQ_LENGTH,
+                "class_config": CLASS_CONFIG,
                 "sample_frac": SAMPLE_FRAC
             }
         )
@@ -79,8 +80,9 @@ if __name__ == '__main__':
     
         # Loading data
         logger.info(f"Loading and preprocessing data from {DATA_DIR}...")
-        train_ds, val_ds, test_ds, id2label, label2id, class_weights, feature_names = load_and_prepare_data(
+        train_ds, val_ds, test_ds, label_encoder, class_weights, feature_names = load_and_prepare_data(
             data_dir=DATA_DIR,
+            class_config=CLASS_CONFIG,
             tokenizer=tokenizer,
             max_seq_len=MAX_SEQ_LENGTH,
             random_state=RANDOM_STATE,
@@ -90,22 +92,29 @@ if __name__ == '__main__':
         logger.info("Sample textualized data:")
         for i in range(min(3, len(train_ds))):
             logger.info(f"Text: {train_ds['text'][i]}")
-            logger.info(f"Label: {id2label[train_ds['label'][i]]}")
+            logger.info(f"Label: {label_encoder.inverse_transform([train_ds['label'][i]])[0]}")
         
         if wandb.run is not None:
             wandb.log({
                 'training_size': len(train_ds),
                 'val_size': len(val_ds),
                 'test_size': len(test_ds),
-                'num_classes': len(id2label),
+                'num_classes': len(label_encoder.classes_),
                 'features_used': len(feature_names)
             })
     
-        num_labels = len(id2label)
+        num_labels = len(label_encoder.classes_)
+        id2label = {i: label for i, label in enumerate(label_encoder.classes_)}
+        label2id = {label: i for i, label in enumerate(label_encoder.classes_)}
     
-        logger.info(f"Number of labels: {num_labels}, Classes: {list(id2label.values())}, Test size: {len(test_ds)}")
+        logger.info(f"Number of labels: {num_labels}, Classes: {list(label_encoder.classes_)}, Test size: {len(test_ds)}")
         if wandb.run is not None:
-            wandb.log({'classes': list(id2label.values())})
+            wandb.log({'classes': list(label_encoder.classes_)})
+        
+        # Validate class config
+        expected_classes = {2: 2, 6: 6, 19: 19}.get(CLASS_CONFIG)
+        if num_labels != expected_classes:
+            raise ValueError(f"Expected {expected_classes} classes, but found {num_labels}.")
     
         # RoBERTa initialization
         logger.info(f"Initializing RoBERTa model {MODEL_NAME} for {num_labels} classes...")
@@ -130,7 +139,7 @@ if __name__ == '__main__':
             gradient_checkpointing=True,
             learning_rate=LEARNING_RATE,
             weight_decay=0.01,
-            eval_strategy="steps",
+            evaluation_strategy="steps",
             eval_steps=100,
             save_strategy="steps",
             save_steps=100,
@@ -142,7 +151,9 @@ if __name__ == '__main__':
             max_grad_norm=1.0,
             dataloader_num_workers=0,
             save_total_limit=2,
-            seed=RANDOM_STATE
+            seed=RANDOM_STATE,
+            early_stopping_patience=2,
+            early_stopping_threshold=0.01
         )
     
         # Init Trainer
@@ -154,7 +165,8 @@ if __name__ == '__main__':
             eval_dataset=val_ds,
             compute_metrics=compute_metrics,
             data_collator=data_collator,
-            class_weights=class_weights
+            class_weights=class_weights,
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=2)]
         )
     
         # Model Training
@@ -171,19 +183,19 @@ if __name__ == '__main__':
         # Save final model
         if SAVE_EVAL_RESULTS:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
-            eval_path = os.path.join(OUTPUT_DIR, "test_results.json")
+            eval_path = os.path.join(OUTPUT_DIR, "test_results_ciciomt.json")
             with open(eval_path, "w") as f:
                 json.dump(test_results, f, indent=4)
             logger.info(f"Test results saved to {eval_path}")
         
         # Save final model and tokenizer
-        final_model_path = os.path.join(OUTPUT_DIR, "best_roberta_model") 
+        final_model_path = os.path.join(OUTPUT_DIR, "best_roberta_model_ciciomt") 
         model.save_pretrained(final_model_path)
         tokenizer.save_pretrained(final_model_path) 
     
         # Saving label encoder classes for later use
         #label_encoder_path = os.path.join(final_model_path, "label_encoder_classes.npy")
-        #np.save(os.path.join(final_model_path, "label_encoder_classes.npy"), label_encoder.classes_)
+        np.save(os.path.join(final_model_path, "label_encoder_classes.npy"), label_encoder.classes_)
         logger.info(f"Best model, tokenizer, and label encoder classes saved to {final_model_path}")
         
         if wandb.run is not None:
