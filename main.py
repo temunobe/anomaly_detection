@@ -26,14 +26,14 @@ OUTPUT_DIR = config['output']
 MODEL_NAME = "roberta-base"
 LOGGING_DIR = config['logs'] 
 WANDB_API_KEY = config['wb_api_key']
-WANDB_PROJECT = 'llm-anomaly-detection'
-WANDB_ENTITY = 'bsindala-university-of-alabama-at-birmigham'
-NUM_EPOCHS = 10 #3
-BATCH_SIZE = 8 #16
-LEARNING_RATE = 1e-5
-MAX_SEQ_LENGTH = 256 #128
-RANDOM_STATE = 42
-SAMPLE_FRAC = 1.0 # 20% for faster prototyping
+WANDB_PROJECT = config['wb_project_wustl']
+WANDB_ENTITY = config['wb_entity']
+NUM_EPOCHS = config['epochs']
+BATCH_SIZE = config['batch_size']
+LEARNING_RATE = config['lr']
+MAX_SEQ_LENGTH = config['max_seq_len']
+RANDOM_STATE = config['rand_state']
+SAMPLE_FRAC = config['sample_frac']
 SAVE_EVAL_RESULTS = True
 
 # Metrics evaluation

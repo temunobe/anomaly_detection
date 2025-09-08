@@ -46,7 +46,7 @@ def textualize_flow(row, feature_names, sep_token="</s>") -> str:
             
     return f" {sep_token}".join(text_parts)
                          
-def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2):#sample_size=None):
+def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2, feature_cols=None):#sample_size=None):
     """Load and prepare CICIoMT2024 dataset efficiently with streaming and subsampling."""
     logger.info(f"Loading and preparing datasets for {class_config}-class configuration...")
     
