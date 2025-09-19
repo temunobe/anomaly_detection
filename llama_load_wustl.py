@@ -4,6 +4,7 @@ import numpy as np
 import logging
 import random
 
+from transformers import LlamaTokenizerFast
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 from datasets import Dataset
@@ -66,7 +67,7 @@ def descriptive_textualization(row, feature_names):
     return ", ".join(phrases)
 
 def textualize_flow(row, feature_names, sep_token="</s>", format_style="kv"):
-    """Converts row data to text for RoBERTa input."""
+    """Converts row data to text for Llama input."""
     if format_style == "descriptive":
         return descriptive_textualization(row, feature_names)
     
@@ -92,6 +93,7 @@ def textualize_flow(row, feature_names, sep_token="</s>", format_style="kv"):
     return f" {sep_token}".join(text_parts)
 
 def load_and_prepare_data(
+    model,
     data_dir, 
     tokenizer=None, 
     max_seq_len=256, 
@@ -103,7 +105,7 @@ def load_and_prepare_data(
     padding_strategy="max_length",
     kfold=None
 ):
-    """Load and prepare WUSTL-EHMS-2020 dataset for RoBERTa fine-tuning."""
+    """Load and prepare WUSTL-EHMS-2020 dataset for Llama fine-tuning."""
     logger.info(f"Loading WUSTL-EHMS-2020 dataset for binary classification...")
     
     csv_path = os.path.join(data_dir, "wustl-ehms-2020_with_attacks_categories.csv")
@@ -133,7 +135,7 @@ def load_and_prepare_data(
         logger.info(f'Subsampling {sample_frac*100}% of data...')
         df = df.sample(frac=sample_frac, random_state=random_state)
 
-    # Textualize for RoBERTa
+    # Textualize for Llama
     logger.info(f'Textualizing data using format: {format_style}')
     df['text'] = df.apply(lambda row: textualize_flow(row, selected_features, format_style=format_style), axis=1)
     labels = df['Label'].values
@@ -171,11 +173,14 @@ def load_and_prepare_data(
         )
     
     logger.info(f'Training samples: {len(train_texts)}, Validation samples: {len(val_texts)}, Test samples: {len(test_texts)}')
+    
+    tokenizer = LlamaTokenizerFast.from_pretrained(model)
 
     # Tokenize
     def tokenize_function(examples):
+        prompt = [f"[INST] {x} [/INST]" for x in examples['text']]
         return tokenizer(
-            examples['text'], 
+            prompt, 
             padding=padding_strategy, 
             truncation=True, 
             max_length=max_seq_len

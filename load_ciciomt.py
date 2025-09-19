@@ -10,7 +10,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from datasets import Dataset, concatenate_datasets
 from ciciomt_attacks import get_attack_category
-#from config import config
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -42,11 +41,11 @@ def textualize_flow(row, feature_names, sep_token="</s>") -> str:
             elif 'time' in clean_feature_name.lower() or 'duration' in clean_feature_name.lower():
                 text_parts.append(f"The {clean_feature_name} is {value} seconds")
             else:
-                text_parts.append(f"{clean_feature_name} is {value}")
+                text_parts.append(f"The {clean_feature_name} is {value}")
             
     return f" {sep_token}".join(text_parts)
                          
-def load_and_prepare_data(data_dir, class_config, tokenizer, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2, feature_cols=None):#sample_size=None):
+def load_and_prepare_data(data_dir, class_config, tokenizer=None, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2, feature_cols=None):#sample_size=None):
     """Load and prepare CICIoMT2024 dataset efficiently with streaming and subsampling."""
     logger.info(f"Loading and preparing datasets for {class_config}-class configuration...")
     

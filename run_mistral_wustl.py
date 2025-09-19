@@ -6,12 +6,12 @@ import json
 import logging
 import wandb
 
-from transformers import RobertaTokenizerFast, TrainingArguments, DataCollatorWithPadding
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from transformers import AutoTokenizer, TrainingArguments, DataCollatorWithPadding, EarlyStoppingCallback, get_cosine_schedule_with_warmup
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix, classification_report
 
 # Import from modules
-from roberta_model import init_roberta_model, CustomTrainerWithWeightedLoss
-from data_loader import load_and_prepare_data
+from mistral_model import init_mistral_model, CustomTrainerWithWeightedLoss
+from mistral_load_wustl import load_and_prepare_data
 from config import config
 
 # Logging
@@ -23,10 +23,10 @@ os.environ["TOKENIZERS_PARALLELISM"] = 'true'
 # Data Directory
 DATA_DIR = config['data_dir'] 
 OUTPUT_DIR = config['output']
-MODEL_NAME = "roberta-base"
+MODEL_NAME = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 LOGGING_DIR = config['logs'] 
-WANDB_API_KEY = config['wb_api_key']
-WANDB_PROJECT = config['wb_project_wustl']
+WANDB_API_KEY = config['wb_api_mistral_wustl']
+WANDB_PROJECT = config['wb_project_mistral_wustl']
 WANDB_ENTITY = config['wb_entity']
 NUM_EPOCHS = config['epochs']
 BATCH_SIZE = config['batch_size']
@@ -35,6 +35,10 @@ MAX_SEQ_LENGTH = config['max_seq_len']
 RANDOM_STATE = config['rand_state']
 SAMPLE_FRAC = config['sample_frac']
 SAVE_EVAL_RESULTS = True
+USE_FOCAL_LOSS = config['use_focal_loss']
+KFOLD = config['kfold']
+PADDING_STRATEGY = config['padding_strategy']
+FORMAT_STYLE = config['format_style']
 
 # Metrics evaluation
 def compute_metrics(pred):
@@ -42,11 +46,16 @@ def compute_metrics(pred):
     preds = pred.predictions.argmax(-1)
     precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='weighted', zero_division=0)
     acc = accuracy_score(labels, preds)
+    try:
+        auc = roc_auc_score(labels, pred.predictions[:,1]) if pred.predictions.shape[1] == 2 else 0.0
+    except:
+        auc = 0.0
     metrics = {
         'accuracy': acc,
         'f1': f1,
         'precision': precision,
-        'recall': recall
+        'recall': recall,
+        'auc': auc
     }
     if wandb.run is not None:
         wandb.log({"eval_" + k: v for k, v in metrics.items()})
@@ -67,25 +76,34 @@ if __name__ == '__main__':
                 "batch_size": BATCH_SIZE,
                 "learning_rate": LEARNING_RATE,
                 "max_seq_length": MAX_SEQ_LENGTH,
-                "sample_frac": SAMPLE_FRAC
+                "sample_frac": SAMPLE_FRAC,
+                "use_focal_loss": USE_FOCAL_LOSS,
+                "format_style": FORMAT_STYLE,
+                "padding_strategy": PADDING_STRATEGY,
+                "kfold": KFOLD
             }
         )
         logger.info(f'W&B initialized for project: {WANDB_PROJECT}')
         
         # Initialization of tokenizer
         logger.info(f"Loading tokenizer for {MODEL_NAME}...")
-        tokenizer = RobertaTokenizerFast.from_pretrained(MODEL_NAME)
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     
         # Loading data
         logger.info(f"Loading and preprocessing data from {DATA_DIR}...")
         train_ds, val_ds, test_ds, id2label, label2id, class_weights, feature_names = load_and_prepare_data(
+            model=MODEL_NAME,
             data_dir=DATA_DIR,
             tokenizer=tokenizer,
             max_seq_len=MAX_SEQ_LENGTH,
             random_state=RANDOM_STATE,
-            sample_frac=SAMPLE_FRAC
+            sample_frac=SAMPLE_FRAC,
+            format_style=FORMAT_STYLE,
+            padding_strategy=PADDING_STRATEGY,
+            kfold=KFOLD
         )
+        logger.info(f"Class Weights: {class_weights}")
         
         logger.info("Sample textualized data:")
         for i in range(min(3, len(train_ds))):
@@ -107,9 +125,9 @@ if __name__ == '__main__':
         if wandb.run is not None:
             wandb.log({'classes': list(id2label.values())})
     
-        # RoBERTa initialization
-        logger.info(f"Initializing RoBERTa model {MODEL_NAME} for {num_labels} classes...")
-        model = init_roberta_model(
+        # Mistral initialization
+        logger.info(f"Initializing Mistral model {MODEL_NAME} for {num_labels} classes...")
+        model = init_llama_model(
             model_name=MODEL_NAME, 
             num_labels=num_labels, 
             id2label=id2label, 
@@ -130,6 +148,7 @@ if __name__ == '__main__':
             gradient_checkpointing=True,
             learning_rate=LEARNING_RATE,
             weight_decay=0.01,
+            lr_scheduler_type="cosine",
             eval_strategy="steps",
             eval_steps=100,
             save_strategy="steps",
@@ -154,30 +173,48 @@ if __name__ == '__main__':
             eval_dataset=val_ds,
             compute_metrics=compute_metrics,
             data_collator=data_collator,
-            class_weights=class_weights
+            class_weights=class_weights,
+            use_focal_loss=USE_FOCAL_LOSS,
+            callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
         )
     
         # Model Training
-        logger.info("Starting RoBERTa fine-tuning...")
+        logger.info("Starting Mistral fine-tuning...")
         trainer.train()
     
         # Model evaluation on Test Set
         logger.info("\nEvaluating on the test dataset...")
         test_results = trainer.evaluate(eval_dataset=test_ds)
         logger.info(f"Test set evaluation results: {test_results}")
+        
+        preds = trainer.predict(test_ds)
+        pred_labels = preds.predictions.argmax(-1)
+        true_labels = [int(x) for x in test_ds["label"]]
+        cm = confusion_matrix(true_labels, pred_labels)
+        report = classification_report(true_labels, pred_labels, target_names=list(id2label.values()))
+        logger.info(f"Confusion matrix:\n{cm}")
+        logger.info(f"Classification report:\n{report}")
+        
         if wandb.run is not None:
             wandb.log({'test_' + k: v for k, v in test_results.items()})
-    
+            wandb.log({"confusion_matrix": wandb.plot.confusion_matrix(
+                y_true=true_labels,
+                preds=pred_labels,
+                class_names=list(id2label.values())
+            )})
+                
         # Save final model
         if SAVE_EVAL_RESULTS:
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             eval_path = os.path.join(OUTPUT_DIR, "test_results.json")
             with open(eval_path, "w") as f:
                 json.dump(test_results, f, indent=4)
-            logger.info(f"Test results saved to {eval_path}")
+            with open(os.path.join(OUTPUT_DIR, "classification_report.txt"), "w") as f:
+                f.write(report)
+            logger.info(f"Test results and classification report saved to {eval_path}")
         
         # Save final model and tokenizer
-        final_model_path = os.path.join(OUTPUT_DIR, "best_roberta_model") 
+        final_model_path = os.path.join(OUTPUT_DIR, "best_mistral_model_v1") 
         model.save_pretrained(final_model_path)
         tokenizer.save_pretrained(final_model_path) 
     
