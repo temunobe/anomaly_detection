@@ -1,4 +1,4 @@
-# llama_model.py
+# mistral_model.py
 
 import torch
 import logging
@@ -37,9 +37,9 @@ def init_mistral_model(
     lora_r=16
 ):
     """
-    Initializing Llama model for sequence classifitication
+    Initializing Mistral model for sequence classifitication
     """
-    logging.info(f"Initializing Llama model: {model_name} with {num_labels} labels, LoRA={use_lora}")
+    logging.info(f"Initializing Mistral model: {model_name} with {num_labels} labels, LoRA={use_lora}")
     try:
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=True,

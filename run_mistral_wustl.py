@@ -1,4 +1,4 @@
-# main.py
+# run_mistral_wustl.py
 import os
 import numpy as np
 import torch
@@ -127,7 +127,7 @@ if __name__ == '__main__':
     
         # Mistral initialization
         logger.info(f"Initializing Mistral model {MODEL_NAME} for {num_labels} classes...")
-        model = init_llama_model(
+        model = init_mistral_model(
             model_name=MODEL_NAME, 
             num_labels=num_labels, 
             id2label=id2label, 

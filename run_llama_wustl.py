@@ -1,4 +1,4 @@
-# main.py
+# run_llama_wustl.py
 import os
 import numpy as np
 import torch
