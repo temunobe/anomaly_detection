@@ -4,7 +4,7 @@ import torch
 import logging
 import wandb
 
-from transformers import LlamaForSequenceClassification, LlamaTokenizerFast
+from transformers import LlamaForSequenceClassification, LlamaTokenizerFast, Trainer
 from peft import LoraConfig, get_peft_model
 
 logging.basicConfig(level=logging.INFO)
@@ -71,3 +71,54 @@ def init_llama_model(
     except Exception as e:
         logger.error(f"Failed to initialize model: {e}")
         raise
+        
+class CustomTrainerWithWeightedLoss(Trainer):
+    """
+    Custom Trainer to apply class weights to the loss function.
+    
+    Args: 
+        class_weights (torch.Tensor): Tensor of class weights for imbalanced classification.
+    """
+    def __init__(self, *args, class_weights=None, use_focal_loss=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.use_focal_loss = use_focal_loss
+        if class_weights is not None:
+            weights = torch.tensor(list(class_weights.values()), dtype=torch.float32)
+            weights = weights / weights.sum() * len(weights)
+            self.class_weights = weights.to(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+            if wandb.run is None:
+                wandb.log({"class_weights": {i: w.item() for i, w in enumerate(self.class_weights)}})
+        else:
+            self.class_weights = None
+        logger.info(f'Class weights initialized: {self.class_weights}, Focal Loss: {self.use_focal_loss}')
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """
+        Compute the weighted cross-entropy loss
+        
+        Args:
+            model: The model being trained
+            inputs (dict): Input batch including 'labels'
+            return_output (bool): Whether to return model outputs 
+            
+        Returns:
+            loss or (loss, outputs)
+        """
+        try:
+            labels = inputs.pop('labels')
+            outputs = model(**inputs)
+            logits = outputs.logits
+            weight = self.class_weights.to(device=logits.device, dtype=logits.dtype) if self.class_weights is not None else None
+            labels = labels.to(dtype=torch.long)
+            if self.use_focal_loss:
+                loss_fnct = FocalLoss(alpha=weight)
+                loss = loss_fnct(logits, labels)
+            else:
+                loss_fnct = torch.nn.CrossEntropyLoss(weight=weight)
+                loss = loss_fnct(logits.view(-1, self.model.config.num_labels), labels.view(-1))
+            if wandb.run is not None:
+                wandb.log({"batch_loss": loss.item()})
+            return (loss, outputs) if return_outputs else loss
+        except Exception as e:
+            logger.error(f'Error computing loss: {e}')
+            raise

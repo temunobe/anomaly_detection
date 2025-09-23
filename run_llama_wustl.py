@@ -87,7 +87,7 @@ if __name__ == '__main__':
         
         # Initialization of tokenizer
         logger.info(f"Loading tokenizer for {MODEL_NAME}...")
-        tokenizer = LlamaTokenizerFast.from_pretrained(MODEL_NAME)
+        tokenizer = LlamaTokenizerFast.from_pretrained(MODEL_NAME, local_files_only=True)
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     
         # Loading data
