@@ -33,6 +33,7 @@ try:
 except Exception:
     pass
 
+
 # Data Directory and config
 DATA_DIR = config['ciciomt_data_dir']
 OUTPUT_DIR = config['output']
@@ -49,9 +50,10 @@ RANDOM_STATE = config['rand_state']
 SAMPLE_FRAC = config['sample_frac']
 SAVE_EVAL_RESULTS = True
 USE_FOCAL_LOSS = config['use_focal_loss']
-CLASS_CONFIG = config.get('ciciomt_class_config', 2)  # 2, 6, or 19
+CLASS_CONFIG = config.get('class_config', 2)  # 2, 6, or 19
 PADDING_STRATEGY = config['padding_strategy']
 FORMAT_STYLE = config['format_style']
+KFOLD = config.get('kfold', None)
 
 # Metrics evaluation
 def compute_metrics(pred):
