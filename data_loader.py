@@ -15,50 +15,27 @@ logger = logging.getLogger(__name__)
 pd.set_option('display.max_columns', None)
 
 # Define feature groups
-PHYSIO_FEATURES = ['HR', 'SpO2', 'TEMP', 'BP', 'ECG', 'EEG', 'IBI', 'GSR']
-NETWORK_FEATURES = ['SrcBytes', 'DstBytes', 'TotBytes', 'SrcPkts', 'DstPkts', 'TotPkts', 'Dur', 'Sport', 'Dport']
-DEVICE_CONTEXT_FEATURES = ['Time', 'DeviceID', 'Location', 'PatientID']
+
+# CICIoMT2024 actual features
+CIC_FEATURES = [
+    'Header-Length', 'Protocol Type', 'Duration', 'Rate', 'Srate',
+    'fin_flag_number', 'syn_flag_number', 'rst_flag_number', 'psh_flag_number', 'ack_flag_number',
+    'ece_flag_number', 'cwr_flag_number', 'ack_count', 'syn_count', 'fin_count', 'rst_count',
+    'HTTP', 'HTTPS', 'DNS', 'Telnet', 'SMTP', 'SSH', 'IRC', 'TCP', 'UDP', 'DHCP', 'ARP', 'ICMP', 'IGMP',
+    'IPv', 'LLC', 'Tot sum', 'Min', 'Max', 'AVG', 'Std', 'Tot size', 'IAT', 'Number', 'Magnitue',
+    'Radius', 'Covariance', 'Variance', 'Weight'
+]
 
 def descriptive_textualization(row, feature_names):
     """
     Dynamic generation of a descriptive sentence using all relevant features.
     """
+
     phrases = []
-    # Contextual features
-    if 'Time' in feature_names and 'Time' in row and not pd.isnull(row['Time']):
-        phrases.append(f"At {row['Time']}")
-    if 'DeviceID' in feature_names and 'DeviceID' in row and not pd.isnull(row['DeviceID']):
-        phrases.append(f"device ID {row['DeviceID']}")
-    if 'Location' in feature_names and 'Location' in row and not pd.isnull(row['Location']):
-        phrases.append(f"at location {row['Location']}")
-    if 'PatientID' in feature_names and 'PatientID' in row and not pd.isnull(row['PatientID']):
-        phrases.append(f"for patient {row['PatientID']}")
-        
-    # Physiological features
-    bio_phrases = []
-    for f in PHYSIO_FEATURES:
+    for f in CIC_FEATURES:
         if f in feature_names and f in row and not pd.isnull(row[f]):
             v = row[f]
-            unit = ""
-            if f == 'HR':
-                unit = " bpm"
-            elif f == 'TEMP':
-                unit = "°F"
-            elif f == 'SpO2':
-                unit = "%"
-            bio_phrases.append(f"{f} of {v}{unit}")
-    if bio_phrases:
-        phrases.append(", ".join(bio_phrases))
-        
-    # Network features
-    net_phrases = []
-    for f in NETWORK_FEATURES:
-        if f in feature_names and f in row and not pd.isnull(row[f]):
-            v = row[f]
-            net_phrases.append(f"{f}={v}")
-    if net_phrases:
-        phrases.append(", ".join(net_phrases))
-        
+            phrases.append(f"{f}: {v}")
     # Label/Status
     label = row.get('Label', 0)
     status = "normal" if label == 0 else "anomaly"
@@ -107,16 +84,29 @@ def load_and_prepare_data(
     augment_numeric_jitter: float = 0.0,
 ):
     """Load and prepare WUSTL-EHMS-2020 dataset for RoBERTa fine-tuning."""
-    logger.info(f"Loading WUSTL-EHMS-2020 dataset for binary classification...")
-    
-    csv_path = os.path.join(data_dir, "wustl-ehms-2020_with_attacks_categories.csv")
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"Dataset not found: {csv_path}.")
 
-    df = pd.read_csv(csv_path)
+    # If CICIoMT2024 format, load all CSVs from train and test subdirs
+    train_dir = os.path.join(data_dir, 'train')
+    test_dir = os.path.join(data_dir, 'test')
+    if os.path.isdir(train_dir) and os.path.isdir(test_dir):
+        train_files = [os.path.join(train_dir, f) for f in os.listdir(train_dir) if f.endswith('.csv')]
+        test_files = [os.path.join(test_dir, f) for f in os.listdir(test_dir) if f.endswith('.csv')]
+        train_dfs = [pd.read_csv(f) for f in train_files]
+        test_dfs = [pd.read_csv(f) for f in test_files]
+        df_train = pd.concat(train_dfs, ignore_index=True) if train_dfs else pd.DataFrame()
+        df_test = pd.concat(test_dfs, ignore_index=True) if test_dfs else pd.DataFrame()
+        # Combine for unified processing and splitting
+        df = pd.concat([df_train, df_test], ignore_index=True)
+        logger.info(f"Loaded {len(df_train)} train and {len(df_test)} test samples from CICIoMT2024 CSVs.")
+    else:
+        # Fallback to legacy single CSV
+        csv_path = os.path.join(data_dir, "wustl-ehms-2020_with_attacks_categories.csv")
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"Dataset not found: {csv_path}.")
+        df = pd.read_csv(csv_path)
+        logger.info(f"Loaded {len(df)} samples from legacy CSV format.")
     # Safety: fill NA for all columns, including non-numeric
     df = df.fillna("missing")
-    
     # Filter only binary labels
     df = df[df['Label'].isin([0, 1])]
     if df['Label'].nunique() != 2:
