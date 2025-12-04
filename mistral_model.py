@@ -41,22 +41,98 @@ def init_mistral_model(
     """
     logging.info(f"Initializing Mistral model: {model_name} with {num_labels} labels, LoRA={use_lora}")
     try:
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-        )
-        
-        model = AutoModel.from_pretrained(
-            model_name,
-            quantization_config=quantization_config,
-            num_labels=num_labels, 
-            id2label=id2label,
-            label2id=label2id,
-            dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto"
-        )
+        # Try to enable bitsandbytes 4-bit quantization if available. If bitsandbytes
+        # is not installed, fall back to loading without quantization.
+        quant_kwargs = {}
+        try:
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_use_double_quant=True,
+            )
+            quant_kwargs['quantization_config'] = quantization_config
+            logger.info("BitsAndBytesConfig created: attempting 4-bit quantized load.")
+        except Exception as qerr:
+            # bitsandbytes not available or incompatible — proceed without quantization
+            logger.warning(f"bitsandbytes 4-bit quantization unavailable, continuing without quantization: {qerr}")
+
+        # Load model weights as float32 and allow Trainer/Accelerate to
+        # perform autocast to float16 during forward passes when fp16 is enabled.
+        # Prefer to dispatch the model across GPUs when multiple devices
+        # are available to avoid replicating the full model in DataParallel.
+        # Attempt to load the model. If the model repo is private or the
+        # identifier is incorrect, transformers will raise an OSError indicating
+        # missing weight files. In that case, retry using an auth token (if
+        # provided via env HF_TOKEN) and provide an actionable error message.
+        try:
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                model = AutoModel.from_pretrained(
+                    model_name,
+                    num_labels=num_labels,
+                    id2label=id2label,
+                    label2id=label2id,
+                    dtype=torch.float32,
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                    **quant_kwargs,
+                )
+            else:
+                model = AutoModel.from_pretrained(
+                    model_name,
+                    num_labels=num_labels,
+                    id2label=id2label,
+                    label2id=label2id,
+                    dtype=torch.float32,
+                    device_map="auto",
+                    **quant_kwargs,
+                )
+        except OSError as oe:
+            # Try to retry with an auth token if available. Prefer env var, then config.hf_token.
+            import os as _os
+            _token = _os.environ.get('HF_TOKEN') or _os.environ.get('HUGGINGFACEHUB_API_TOKEN')
+            if not _token:
+                try:
+                    from config import config as _cfg
+                    _token = _cfg.get('hf_token') or _cfg.get('HF_TOKEN')
+                except Exception:
+                    _token = None
+            if _token:
+                logger.info("Initial model download failed; retrying with HF token from environment.")
+                try:
+                    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                        model = AutoModel.from_pretrained(
+                            model_name,
+                            num_labels=num_labels,
+                            id2label=id2label,
+                            label2id=label2id,
+                            dtype=torch.float32,
+                            device_map="auto",
+                            low_cpu_mem_usage=True,
+                            use_auth_token=_token,
+                            **quant_kwargs,
+                        )
+                    else:
+                        model = AutoModel.from_pretrained(
+                            model_name,
+                            num_labels=num_labels,
+                            id2label=id2label,
+                            label2id=label2id,
+                            dtype=torch.float32,
+                            device_map="auto",
+                            use_auth_token=_token,
+                            **quant_kwargs,
+                        )
+                except Exception:
+                    logger.error("Retry with HF token also failed.")
+                    raise
+            else:
+                # Re-raise with more context
+                raise OSError(
+                    f"Failed to load model '{model_name}'. {oe}\n"
+                    "Possible causes: incorrect model id, the repo has no PyTorch weights, or the repo is private.\n"
+                    "If the model is private, set environment variable HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN) to a valid token and retry."
+                ) from oe
         if use_lora:
             lora_config = LoraConfig(
                 r=lora_r,
@@ -71,11 +147,16 @@ def init_mistral_model(
             logger.info(f"Applied LoRA with rank={lora_r}, trainable params: {total_params}")
             if wandb.run is None:
                 wandb.log({"trainable_params": total_params, "lora_rank": lora_r})
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model.to(device)
-        logger.info(f"Model moved to device: {device}")
-        if wandb.run is not None:
-            wandb.log({"device": str(device)})
+        if not (hasattr(model, "hf_device_map") and model.hf_device_map is not None):
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model.to(device)
+            logger.info(f"Model moved to device: {device}")
+            if wandb.run is not None:
+                wandb.log({"device": str(device)})
+        else:
+            logger.info(f"Model device map: {model.hf_device_map}")
+            if wandb.run is not None:
+                wandb.log({"device_map": str(model.hf_device_map)})
         return model
     except Exception as e:
         logger.error(f"Failed to initialize model: {e}")

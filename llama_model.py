@@ -5,6 +5,7 @@ import logging
 import wandb
 
 from transformers import LlamaForSequenceClassification, LlamaTokenizerFast, Trainer
+from quant_utils import get_quant_kwargs
 from peft import LoraConfig, get_peft_model
 
 logging.basicConfig(level=logging.INFO)
@@ -41,13 +42,82 @@ def init_llama_model(
     """
     logging.info(f"Initializing Llama model: {model_name} with {num_labels} labels, LoRA={use_lora}")
     try:
-        model = LlamaForSequenceClassification.from_pretrained(
-            model_name, 
-            num_labels=num_labels, 
-            id2label=id2label,
-            label2id=label2id,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32
-        )
+        # Load model weights as float32 and let the Trainer/Accelerate
+        # handle mixed precision (autocast to fp16) during the forward pass.
+        # This avoids having model parameters permanently in float16 which
+        # can cause issues with GradScaler expecting autocast-managed grads.
+        # If multiple GPUs are available, let the HF loader automatically
+        # shard the model across devices (device_map="auto") instead of
+        # moving the whole model to a single device which triggers
+        # DataParallel replication and OOMs. Use low_cpu_mem_usage to reduce
+        # peak CPU memory while loading.
+        quant_kwargs = get_quant_kwargs(load_in_4bit=False)
+        # We default to not loading in 4-bit for Llama here, but keep the
+        # hook so enabling quantization later is straightforward.
+        try:
+            if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                model = LlamaForSequenceClassification.from_pretrained(
+                    model_name,
+                    num_labels=num_labels,
+                    id2label=id2label,
+                    label2id=label2id,
+                    torch_dtype=torch.float32,
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                    **quant_kwargs,
+                )
+            else:
+                model = LlamaForSequenceClassification.from_pretrained(
+                    model_name,
+                    num_labels=num_labels,
+                    id2label=id2label,
+                    label2id=label2id,
+                    torch_dtype=torch.float32,
+                    **quant_kwargs,
+                )
+        except OSError as oe:
+            import os as _os
+            _token = _os.environ.get('HF_TOKEN') or _os.environ.get('HUGGINGFACEHUB_API_TOKEN')
+            if not _token:
+                try:
+                    from config import config as _cfg
+                    _token = _cfg.get('hf_token') or _cfg.get('HF_TOKEN')
+                except Exception:
+                    _token = None
+            if _token:
+                logger.info("Initial model download failed; retrying with HF token from environment.")
+                try:
+                    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+                        model = LlamaForSequenceClassification.from_pretrained(
+                            model_name,
+                            num_labels=num_labels,
+                            id2label=id2label,
+                            label2id=label2id,
+                            torch_dtype=torch.float32,
+                            device_map="auto",
+                            low_cpu_mem_usage=True,
+                            use_auth_token=_token,
+                            **quant_kwargs,
+                        )
+                    else:
+                        model = LlamaForSequenceClassification.from_pretrained(
+                            model_name,
+                            num_labels=num_labels,
+                            id2label=id2label,
+                            label2id=label2id,
+                            torch_dtype=torch.float32,
+                            use_auth_token=_token,
+                            **quant_kwargs,
+                        )
+                except Exception:
+                    logger.error("Retry with HF token also failed.")
+                    raise
+            else:
+                raise OSError(
+                    f"Failed to load Llama model '{model_name}'. {oe}\n"
+                    "Possible causes: incorrect model id, the repo has no PyTorch weights, or the repo is private.\n"
+                    "If the model is private, set environment variable HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN) to a valid token and retry."
+                ) from oe
         if use_lora:
             lora_config = LoraConfig(
                 r=lora_r,
@@ -62,11 +132,20 @@ def init_llama_model(
             logger.info(f"Applied LoRA with rank={lora_r}, trainable params: {total_params}")
             if wandb.run is None:
                 wandb.log({"trainable_params": total_params, "lora_rank": lora_r})
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model.to(device)
-        logger.info(f"Model moved to device: {device}")
-        if wandb.run is not None:
-            wandb.log({"device": str(device)})
+        # If model was dispatched with device_map="auto", it is already
+        # placed on multiple devices. Otherwise, move it to the single
+        # available device.
+        if not (hasattr(model, "hf_device_map") and model.hf_device_map is not None):
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model.to(device)
+            logger.info(f"Model moved to device: {device}")
+            if wandb.run is not None:
+                wandb.log({"device": str(device)})
+        else:
+            # Log the device map chosen by the HF loader
+            logger.info(f"Model device map: {model.hf_device_map}")
+            if wandb.run is not None:
+                wandb.log({"device_map": str(model.hf_device_map)})
         return model
     except Exception as e:
         logger.error(f"Failed to initialize model: {e}")

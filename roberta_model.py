@@ -3,6 +3,7 @@ import torch
 import logging
 import wandb
 from transformers import RobertaForSequenceClassification, Trainer
+from quant_utils import get_quant_kwargs
 from peft import LoraConfig, get_peft_model
 
 # Logging
@@ -54,13 +55,46 @@ def init_roberta_model(
     
     logging.info(f"Initializing RoBERTa model: {model_name} with {num_labels} labels, LoRA={use_lora}")
     try:
-        model = RobertaForSequenceClassification.from_pretrained(
-            model_name,
-            num_labels=num_labels,
-            id2label=id2label,
-            label2id=label2id,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
-        )
+        quant_kwargs = get_quant_kwargs(load_in_4bit=False)
+        try:
+            model = RobertaForSequenceClassification.from_pretrained(
+                model_name,
+                num_labels=num_labels,
+                id2label=id2label,
+                label2id=label2id,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                **quant_kwargs,
+            )
+        except OSError as oe:
+            import os as _os
+            _token = _os.environ.get('HF_TOKEN') or _os.environ.get('HUGGINGFACEHUB_API_TOKEN')
+            if not _token:
+                try:
+                    from config import config as _cfg
+                    _token = _cfg.get('hf_token') or _cfg.get('HF_TOKEN')
+                except Exception:
+                    _token = None
+            if _token:
+                logger.info("Initial model download failed; retrying with HF token from environment.")
+                try:
+                    model = RobertaForSequenceClassification.from_pretrained(
+                        model_name,
+                        num_labels=num_labels,
+                        id2label=id2label,
+                        label2id=label2id,
+                        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                        use_auth_token=_token,
+                        **quant_kwargs,
+                    )
+                except Exception:
+                    logger.error("Retry with HF token also failed.")
+                    raise
+            else:
+                raise OSError(
+                    f"Failed to load RoBERTa model '{model_name}'. {oe}\n"
+                    "Possible causes: incorrect model id, the repo has no PyTorch weights, or the repo is private.\n"
+                    "If the model is private, set environment variable HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN) to a valid token and retry."
+                ) from oe
         model.config.hidden_dropout_prob = dropout
         model.gradient_checkpointing_enable()
         if use_lora:

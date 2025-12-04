@@ -5,6 +5,7 @@ import torch
 import json
 import logging
 import wandb
+import re
 
 from transformers import AutoTokenizer, TrainingArguments, DataCollatorWithPadding, EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix, classification_report
@@ -19,11 +20,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 os.environ["TOKENIZERS_PARALLELISM"] = 'true'
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+# Export HF token from config into environment so downstream HF calls and subprocesses
+# can authenticate when loading private models. This is convenient for environments
+# where the token is stored in config.py instead of an env var.
+try:
+    _hf = config.get('hf_token') or config.get('HF_TOKEN')
+    if _hf:
+        os.environ.setdefault('HF_TOKEN', _hf)
+        os.environ.setdefault('HUGGINGFACEHUB_API_TOKEN', _hf)
+        logger.info('HF token exported to environment from config (for model downloads).')
+except Exception:
+    pass
 
 # Data Directory
 DATA_DIR = config['data_dir'] 
 OUTPUT_DIR = config['output']
-MODEL_NAME = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 LOGGING_DIR = config['logs'] 
 WANDB_API_KEY = config['wb_api_mistral_wustl']
 WANDB_PROJECT = config['wb_project_mistral_wustl']
@@ -85,9 +98,24 @@ if __name__ == '__main__':
         )
         logger.info(f'W&B initialized for project: {WANDB_PROJECT}')
         
-        # Initialization of tokenizer
+        # Initialization of tokenizer (robust: try fast, fall back to slow; ensure pad_token exists)
         logger.info(f"Loading tokenizer for {MODEL_NAME}...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, fix_mistral_regex=True)
+        except Exception as e_fast:
+            logger.warning(f"Fast tokenizer load failed ({e_fast}), retrying with slow tokenizer...")
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False, fix_mistral_regex=True)
+
+        # Ensure tokenizer has a pad token (some LLM tokenizers don't). Use eos_token as pad if available.
+        if tokenizer.pad_token is None:
+            if getattr(tokenizer, 'eos_token', None) is not None:
+                tokenizer.pad_token = tokenizer.eos_token
+                logger.info('Set tokenizer.pad_token = tokenizer.eos_token')
+            else:
+                # Add a new pad token if no eos_token present
+                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                logger.info('Added special token [PAD] as tokenizer.pad_token')
+
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     
         # Loading data
@@ -101,6 +129,9 @@ if __name__ == '__main__':
             sample_frac=SAMPLE_FRAC,
             format_style=FORMAT_STYLE,
             padding_strategy=PADDING_STRATEGY,
+            normalize_numeric=config.get('normalize_numeric', True),
+            oversample_minority=config.get('oversample_minority', False),
+            augment_numeric_jitter=config.get('augment_numeric_jitter', 0.0),
             kfold=KFOLD
         )
         logger.info(f"Class Weights: {class_weights}")
@@ -136,15 +167,63 @@ if __name__ == '__main__':
             lora_r=16
         )
     
-        # Training Arguments
-        logger.info("Setting up training arguments...")
+        # Decide precision (fp16 / bf16 / fp32) based on config and runtime support
+        def decide_precision(cfg):
+            pref = cfg.get('precision', 'auto')
+            prefer_bf16 = cfg.get('prefer_bf16', False)
+            cuda_available = torch.cuda.is_available()
+            bf16_supported = False
+            try:
+                bf16_supported = cuda_available and getattr(torch.cuda, 'is_bf16_supported', lambda: False)()
+            except Exception:
+                bf16_supported = False
+
+            fp16 = False
+            bf16 = False
+            if pref == 'fp32':
+                fp16 = False
+                bf16 = False
+            elif pref == 'fp16':
+                fp16 = cuda_available
+                bf16 = False
+            elif pref == 'bf16':
+                if bf16_supported:
+                    bf16 = True
+                    fp16 = False
+                else:
+                    bf16 = False
+                    fp16 = cuda_available
+            else:  # auto
+                if prefer_bf16 and bf16_supported:
+                    bf16 = True
+                    fp16 = False
+                else:
+                    fp16 = cuda_available
+                    bf16 = False
+
+            return fp16, bf16, bf16_supported, cuda_available
+
+        logger.info("Setting up training arguments and precision...")
+        fp16_flag, bf16_flag, bf16_supported, cuda_available = decide_precision(config)
+        logger.info(f"Precision decision: fp16={fp16_flag}, bf16={bf16_flag}, bf16_supported={bf16_supported}, cuda_available={cuda_available}")
+
+        if wandb.run is not None:
+            wandb.config.update({
+                'precision': config.get('precision', 'auto'),
+                'prefer_bf16': config.get('prefer_bf16', False),
+                'fp16': fp16_flag,
+                'bf16': bf16_flag,
+                'bf16_supported': bf16_supported
+            })
+
         training_args = TrainingArguments(
             output_dir=OUTPUT_DIR,
             num_train_epochs=NUM_EPOCHS,
             per_device_train_batch_size=BATCH_SIZE,
             per_device_eval_batch_size=BATCH_SIZE * 2,
             gradient_accumulation_steps=4,
-            fp16=torch.cuda.is_available(),
+            fp16=fp16_flag,
+            bf16=bf16_flag,
             gradient_checkpointing=True,
             learning_rate=LEARNING_RATE,
             weight_decay=0.01,
@@ -224,7 +303,9 @@ if __name__ == '__main__':
         logger.info(f"Best model, tokenizer, and label encoder classes saved to {final_model_path}")
         
         if wandb.run is not None:
-            artifact = wandb.Artifact(MODEL_NAME, type='model')
+            artifact_name = os.path.basename(MODEL_NAME)
+            artifact_name = re.sub(r'[^A-Za-z0-9_.\-]', '_', artifact_name)
+            artifact = wandb.Artifact(artifact_name, type='model')
             artifact.add_dir(final_model_path)
             wandb.log_artifact(artifact)
             logger.info('Model and tokenizer saved as W&B artifact')
@@ -232,7 +313,17 @@ if __name__ == '__main__':
         logger.info("\nScript execution completed successfully.")
         wandb.finish()
     except Exception as e:
-        logger.info(f"ERROR: An exception occured during execution: {e}")
+        emsg = str(e)
+        if 'out of memory' in emsg.lower() or isinstance(e, RuntimeError) and 'out of memory' in emsg.lower():
+            logger.error("CUDA out of memory detected. Suggestions:\n"
+                         " - Reduce `batch_size` (per_device_train_batch_size) in config.py or training args.\n"
+                         " - Close other GPU processes (check `nvidia-smi`), or run on a less-used GPU.\n"
+                         " - Set environment variable PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128 to reduce fragmentation.\n"
+                         " - Use model sharding/device_map (if supported) or quantized/8-bit loading to lower memory.\n"
+                         " - Disable other memory consumers or lower model size.")
+        else:
+            logger.info(f"ERROR: An exception occured during execution: {e}")
+
         if wandb.run is not None:
             wandb.log({'error': str(e)})
             wandb.finish()

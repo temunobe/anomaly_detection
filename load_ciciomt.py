@@ -45,7 +45,7 @@ def textualize_flow(row, feature_names, sep_token="</s>") -> str:
             
     return f" {sep_token}".join(text_parts)
                          
-def load_and_prepare_data(data_dir, class_config, tokenizer=None, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2, feature_cols=None):#sample_size=None):
+def load_and_prepare_data(data_dir, class_config, tokenizer=None, max_seq_len=256, test_size_for_val=0.2, random_state=42, sample_frac=0.2, feature_cols=None, normalize_numeric: bool = False, oversample_minority: bool = False, augment_numeric_jitter: float = 0.0):#sample_size=None):
     """Load and prepare CICIoMT2024 dataset efficiently with streaming and subsampling."""
     logger.info(f"Loading and preparing datasets for {class_config}-class configuration...")
     
@@ -66,8 +66,9 @@ def load_and_prepare_data(data_dir, class_config, tokenizer=None, max_seq_len=25
         
         # select features
         cols = feature_cols or [col for col in df.columns if col not in ['filename', 'Attack_Type']]
-        df['text'] = df.apply(lambda row: textualize_flow(row, cols), axis=1)
-        return df[['text', 'Attack_Type']]
+    # textualization will be applied after optional normalization/oversampling on splits
+    df['Attack_Type'] = df['Attack_Type']
+    return df
     # Using streaming to load data efficiently
     train_files = [os.path.join(train_path, f) for f in os.listdir(train_path) if f.endswith('.csv')]
     test_files = [os.path.join(test_path, f) for f in os.listdir(test_path) if f.endswith('.csv')]
@@ -93,20 +94,75 @@ def load_and_prepare_data(data_dir, class_config, tokenizer=None, max_seq_len=25
     num_classes = len(label_encoder.classes_)
     logger.info(f"Number of classes: {num_classes}, classes: {list(label_encoder.classes_)}")
 
-    # Split training data to create a validation set
+    # Split training data to create a validation set (do this before textualization so we can normalize/augment)
     train_df, val_df = train_test_split(
-        train_df, 
-        test_size=test_size_for_val, 
-        random_state=random_state, 
+        train_df,
+        test_size=test_size_for_val,
+        random_state=random_state,
         stratify=train_df['label']
     )
-    
-    logger.info(f'Training samples: {len(train_df)}, Validation samples: {len(val_df)}, Test samples: {len(test_df)}')
+
+    logger.info(f'Samples after split -> train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)}')
+
+    # Determine feature columns to operate on
+    cols = feature_cols or [col for col in train_df.columns if col not in ['filename', 'Attack_Type']]
+    numeric_cols = [c for c in cols if c in train_df.columns and pd.api.types.is_numeric_dtype(train_df[c])]
+    if numeric_cols:
+        logger.info(f'Numeric columns detected for potential normalization: {numeric_cols}')
+
+    # use explicit parameters passed to the function
+    augment_jitter = augment_numeric_jitter
+
+    # Normalize numeric columns using train stats
+    if normalize_numeric and numeric_cols:
+        stats = {}
+        for c in numeric_cols:
+            mean = train_df[c].astype(float).mean()
+            std = train_df[c].astype(float).std()
+            if pd.isna(std) or std == 0:
+                std = 1.0
+            stats[c] = (mean, std)
+            train_df[c] = (train_df[c].astype(float) - mean) / std
+            val_df[c] = (val_df[c].astype(float) - mean) / std
+            test_df[c] = (test_df[c].astype(float) - mean) / std
+        logger.info(f'Applied normalization for columns: {list(stats.keys())}')
+
+    # Oversample minority class in training set if requested (simple resample with replacement)
+    if oversample_minority:
+        counts = train_df['label'].value_counts()
+        max_count = counts.max()
+        frames = [train_df]
+        for cls, cnt in counts.items():
+            if cnt < max_count:
+                needed = max_count - cnt
+                samples = train_df[train_df['label'] == cls].sample(n=needed, replace=True, random_state=random_state)
+                frames.append(samples)
+        train_df = pd.concat(frames).sample(frac=1.0, random_state=random_state).reset_index(drop=True)
+        logger.info(f'Oversampled training set to balance classes; new counts: {train_df["label"].value_counts().to_dict()}')
+
+    # Apply numeric jitter augmentation to training split only
+    if augment_jitter and augment_jitter > 0.0 and numeric_cols:
+        rng = np.random.default_rng(seed=random_state)
+        col_stds = {}
+        for c in numeric_cols:
+            std = float(train_df[c].astype(float).std()) if pd.api.types.is_numeric_dtype(train_df[c]) else 1.0
+            if std == 0 or pd.isna(std):
+                std = 1.0
+            col_stds[c] = std
+        logger.info(f'Applying numeric jitter with factor {augment_jitter} to training set numeric columns')
+        for c in numeric_cols:
+            noise = rng.normal(loc=0.0, scale=augment_jitter * col_stds[c], size=len(train_df))
+            train_df[c] = train_df[c].astype(float) + noise
+
+    # Textualize after preprocessing
+    train_df['text'] = train_df.apply(lambda row: textualize_flow(row, cols), axis=1)
+    val_df['text'] = val_df.apply(lambda row: textualize_flow(row, cols), axis=1)
+    test_df['text'] = test_df.apply(lambda row: textualize_flow(row, cols), axis=1)
 
     # Tokenize
     def tokenize_batch(batch):
         return tokenizer(batch['text'], padding='max_length', truncation=True, max_length=max_seq_len)
-    
+
     train_ds = Dataset.from_pandas(train_df[['text', 'label']]).map(tokenize_batch, batched=True)
     val_ds = Dataset.from_pandas(val_df[['text', 'label']]).map(tokenize_batch, batched=True)
     test_ds = Dataset.from_pandas(test_df[['text', 'label']]).map(tokenize_batch, batched=True)

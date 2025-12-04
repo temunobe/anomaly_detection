@@ -105,7 +105,10 @@ def load_and_prepare_data(
     selected_features=None,
     format_style="kv",
     padding_strategy="max_length",
-    kfold=None
+    kfold=None,
+    normalize_numeric: bool = False,
+    oversample_minority: bool = False,
+    augment_numeric_jitter: float = 0.0,
 ):
     """Load and prepare WUSTL-EHMS-2020 dataset for Mistral fine-tuning."""
     logger.info(f"Loading WUSTL-EHMS-2020 dataset for binary classification...")
@@ -137,46 +140,106 @@ def load_and_prepare_data(
         logger.info(f'Subsampling {sample_frac*100}% of data...')
         df = df.sample(frac=sample_frac, random_state=random_state)
 
-    # Textualize for Mistral
-    logger.info(f'Textualizing data using format: {format_style}')
-    df['text'] = df.apply(lambda row: textualize_flow(row, selected_features, format_style=format_style), axis=1)
+    # Split into train/val/test (or kfold)
     labels = df['Label'].values
-
-    # KFold support
     if kfold is not None and kfold > 1:
         skf = StratifiedKFold(n_splits=kfold, shuffle=True, random_state=random_state)
-        for train_idx, test_idx in skf.split(df['text'], labels):
-            train_df = df.iloc[train_idx]
-            test_df = df.iloc[test_idx]
+        for train_idx, test_idx in skf.split(df.index, labels):
+            train_df = df.iloc[train_idx].reset_index(drop=True)
+            test_df = df.iloc[test_idx].reset_index(drop=True)
             break
-        train_texts, train_labels = train_df['text'].tolist(), train_df['Label'].values
-        test_texts, test_labels = test_df['text'].tolist(), test_df['Label'].values
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            train_texts,
-            train_labels,
+        train_df, val_df = train_test_split(
+            train_df,
             test_size=test_size_for_val,
             random_state=random_state,
-            stratify=train_labels
+            stratify=train_df['Label']
         )
     else:
-        train_texts, test_texts, train_labels, test_labels = train_test_split(
-            df['text'], 
-            labels, 
-            test_size=0.2, 
-            random_state=random_state, 
-            stratify=labels
-        )
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            train_texts,
-            train_labels, 
-            test_size=test_size_for_val, 
+        train_df, test_df = train_test_split(
+            df,
+            test_size=0.2,
             random_state=random_state,
-            stratify=train_labels
+            stratify=df['Label']
         )
-    
-    logger.info(f'Training samples: {len(train_texts)}, Validation samples: {len(val_texts)}, Test samples: {len(test_texts)}')
-    
+        train_df, val_df = train_test_split(
+            train_df,
+            test_size=test_size_for_val,
+            random_state=random_state,
+            stratify=train_df['Label']
+        )
+    logger.info(f'Samples after split -> train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)}')
+
+    # Optional numeric normalization (compute stats on train and apply to all splits)
+    numeric_cols = []
+    for col in selected_features:
+        if col in train_df.columns and pd.api.types.is_numeric_dtype(train_df[col]):
+            numeric_cols.append(col)
+    if numeric_cols:
+        logger.info(f'Numeric columns detected for potential normalization: {numeric_cols}')
+
+    # use explicit parameters passed to the function
+    augment_jitter = augment_numeric_jitter
+
+    # Normalize numeric columns using train stats
+    if normalize_numeric and numeric_cols:
+        stats = {}
+        for c in numeric_cols:
+            mean = train_df[c].replace('missing', np.nan).astype(float).mean()
+            std = train_df[c].replace('missing', np.nan).astype(float).std()
+            if pd.isna(std) or std == 0:
+                std = 1.0
+            stats[c] = (mean, std)
+            train_df[c] = (train_df[c].replace('missing', np.nan).astype(float) - mean) / std
+            val_df[c] = (val_df[c].replace('missing', np.nan).astype(float) - mean) / std
+            test_df[c] = (test_df[c].replace('missing', np.nan).astype(float) - mean) / std
+        logger.info(f'Applied normalization for columns: {list(stats.keys())}')
+
+    # Oversample minority class in training set if requested (simple resample with replacement)
+    if oversample_minority:
+        counts = train_df['Label'].value_counts()
+        max_count = counts.max()
+        frames = [train_df]
+        for cls, cnt in counts.items():
+            if cnt < max_count:
+                needed = max_count - cnt
+                samples = train_df[train_df['Label'] == cls].sample(n=needed, replace=True, random_state=random_state)
+                frames.append(samples)
+        train_df = pd.concat(frames).sample(frac=1.0, random_state=random_state).reset_index(drop=True)
+        logger.info(f'Oversampled training set to balance classes; new counts: {train_df["Label"].value_counts().to_dict()}')
+
+    # Apply numeric jitter augmentation to training split only (adds Gaussian noise proportional to column std)
+    if augment_jitter and augment_jitter > 0.0 and numeric_cols:
+        rng = np.random.default_rng(seed=random_state)
+        # compute stds from train_df (after normalization if applied, std may be 1.0)
+        col_stds = {}
+        for c in numeric_cols:
+            # use original std if normalized (std==1.0), else compute current std
+            std = float(train_df[c].astype(float).std()) if pd.api.types.is_numeric_dtype(train_df[c]) else 1.0
+            if std == 0 or pd.isna(std):
+                std = 1.0
+            col_stds[c] = std
+        logger.info(f'Applying numeric jitter with factor {augment_jitter} to training set numeric columns')
+        for c in numeric_cols:
+            noise = rng.normal(loc=0.0, scale=augment_jitter * col_stds[c], size=len(train_df))
+            train_df[c] = train_df[c].astype(float) + noise
+
+    # Textualize splits (after normalization/augmentation/oversampling)
+    logger.info(f'Textualizing data using format: {format_style}')
+    train_df['text'] = train_df.apply(lambda row: textualize_flow(row, selected_features, format_style=format_style), axis=1)
+    val_df['text'] = val_df.apply(lambda row: textualize_flow(row, selected_features, format_style=format_style), axis=1)
+    test_df['text'] = test_df.apply(lambda row: textualize_flow(row, selected_features, format_style=format_style), axis=1)
+
+    train_texts = train_df['text'].tolist()
+    val_texts = val_df['text'].tolist()
+    test_texts = test_df['text'].tolist()
+    train_labels = train_df['Label'].values
+    val_labels = val_df['Label'].values
+    test_labels = test_df['Label'].values
+
     tokenizer = AutoTokenizer.from_pretrained(model)
+
+    # Apply preprocessing flags (explicit parameters)
+    augment_jitter = augment_numeric_jitter
 
     # Tokenize
     def tokenize_function(examples):

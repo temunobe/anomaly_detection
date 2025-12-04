@@ -2,8 +2,10 @@ model_download/
 models/
 __pycache__/
 anomalyenv/
+iomtenv/
 logs/
 .ipynb_checkpoints/
 wandb/
 
 config.*
+*.log
