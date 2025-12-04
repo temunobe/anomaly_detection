@@ -5,8 +5,8 @@
 set -e
 
 # Output log
-exec > >(tee -a llama_wustl_training_log.log) 2>&1
-# exec > >(tee -a llama_ciciomt_training_log.log) 2>&1
+# exec > >(tee -a llama_wustl_training_log.log) 2>&1
+exec > >(tee -a llama_ciciomt_training_log.log) 2>&1
 
 echo "=========================================="
 echo "Llama 4 Scout 17B 16E Training"
@@ -58,8 +58,8 @@ echo ""
 
 # Run as single process - device_map="auto" handles multi-GPU
 source ./iomtenv/bin/activate
-python run_llama_wustl.py
-#python run_llama_ciciomt.py
+# python run_llama_wustl.py
+python run_llama_ciciomt.py
 #accelerate launch --multi_gpu --num_processes 2 iomt_policy_generation.py
 
 echo ""
